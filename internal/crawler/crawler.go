@@ -2,6 +2,7 @@ package crawler
 
 import (
 	"abp-bot-tiktok/internal/models"
+	"abp-bot-tiktok/internal/parser"
 	"abp-bot-tiktok/internal/repository"
 	"abp-bot-tiktok/internal/utils"
 	"abp-bot-tiktok/pkg/config"
@@ -277,7 +278,7 @@ func (c *Crawler) crawlSearch(context playwright.BrowserContext, keywords []stri
 				// 		c.log.Info("✅ Saved to MongoDB", zap.String("keyword", keyword), zap.Int("count", len(results)))
 				// 	}
 				// }
-				// Save to JSON file only
+				// Parse to TiktokPost format and save to JSON file
 				c.saveToFile(keyword, results)
 			}
 
@@ -365,6 +366,17 @@ func (c *Crawler) saveToFile(keyword string, videos []models.VideoItem) {
 	safe := url.QueryEscape(keyword)
 	filename := filepath.Join(c.cfg.OutputDir, fmt.Sprintf("keyword_%s_%s.json", safe, date))
 
+	// Convert to TiktokPost format
+	var posts []parser.TiktokPost
+	for _, v := range videos {
+		post := parser.FromVideoItem(v)
+		posts = append(posts, post)
+
+		// Log từng post dạng JSON
+		b, _ := json.Marshal(post)
+		c.log.Info("📄 Post parsed", zap.String("keyword", keyword), zap.String("json", string(b)))
+	}
+
 	f, err := os.Create(filename)
 	if err != nil {
 		c.log.Error("Failed to create file", zap.Error(err))
@@ -374,9 +386,9 @@ func (c *Crawler) saveToFile(keyword string, videos []models.VideoItem) {
 
 	enc := json.NewEncoder(f)
 	enc.SetIndent("", "  ")
-	_ = enc.Encode(videos)
+	_ = enc.Encode(posts)
 
-	c.log.Info("💾 Saved to file", zap.String("file", filename), zap.Int("count", len(videos)))
+	c.log.Info("💾 Saved to file", zap.String("file", filename), zap.Int("count", len(posts)))
 }
 
 func truncate(s string, n int) string {
