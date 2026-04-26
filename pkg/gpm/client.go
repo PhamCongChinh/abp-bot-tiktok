@@ -41,18 +41,30 @@ func (c *Client) StartProfile(profileID string) (string, error) {
 	}
 	defer resp.Body.Close()
 
+	body, _ := io.ReadAll(resp.Body)
+
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
 		return "", fmt.Errorf("GPM API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
+	// Log raw response for debugging
+	c.log.Info("GPM API response", zap.String("body", string(body)))
+
 	var result StartProfileResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.Unmarshal(body, &result); err != nil {
 		return "", fmt.Errorf("failed to decode response: %w", err)
 	}
 
 	debugAddr := result.Data.RemoteDebuggingAddress
 	if debugAddr == "" {
+		// Try alternative field names
+		c.log.Warn("remote_debugging_address is empty, checking response structure")
+
+		// Parse as generic map to see what fields exist
+		var genericResult map[string]interface{}
+		json.Unmarshal(body, &genericResult)
+		c.log.Info("Response structure", zap.Any("data", genericResult))
+
 		return "", fmt.Errorf("empty remote_debugging_address in response")
 	}
 
