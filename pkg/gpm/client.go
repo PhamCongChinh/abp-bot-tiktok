@@ -1,0 +1,80 @@
+package gpm
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"time"
+
+	"go.uber.org/zap"
+)
+
+type Client struct {
+	apiURL string
+	log    *zap.Logger
+	client *http.Client
+}
+
+type StartProfileResponse struct {
+	Data struct {
+		RemoteDebuggingAddress string `json:"remote_debugging_address"`
+		WSEndpoint             string `json:"ws_endpoint"`
+	} `json:"data"`
+}
+
+func NewClient(apiURL string, log *zap.Logger) *Client {
+	return &Client{
+		apiURL: apiURL,
+		log:    log,
+		client: &http.Client{Timeout: 30 * time.Second},
+	}
+}
+
+func (c *Client) StartProfile(profileID string) (string, error) {
+	url := fmt.Sprintf("%s/profiles/start/%s", c.apiURL, profileID)
+	c.log.Info("Starting GPM profile", zap.String("url", url))
+
+	resp, err := c.client.Get(url)
+	if err != nil {
+		return "", fmt.Errorf("failed to start profile: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("GPM API returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result StartProfileResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	debugAddr := result.Data.RemoteDebuggingAddress
+	if debugAddr == "" {
+		return "", fmt.Errorf("empty remote_debugging_address in response")
+	}
+
+	c.log.Info("GPM profile started", zap.String("debug_addr", debugAddr))
+	return debugAddr, nil
+}
+
+func (c *Client) StopProfile(profileID string) error {
+	url := fmt.Sprintf("%s/profiles/close/%s", c.apiURL, profileID)
+	c.log.Info("Stopping GPM profile", zap.String("url", url))
+
+	resp, err := c.client.Get(url)
+	if err != nil {
+		return fmt.Errorf("failed to stop profile: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		c.log.Warn("GPM stop returned non-200", zap.Int("status", resp.StatusCode), zap.String("body", string(body)))
+	}
+
+	c.log.Info("GPM profile stopped")
+	return nil
+}
