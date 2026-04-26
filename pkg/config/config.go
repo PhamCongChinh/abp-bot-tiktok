@@ -15,7 +15,7 @@ type Config struct {
 	// MongoDB
 	MongoURI string
 	MongoDB  string
-	OrgID    int
+	OrgIDs   []int // Support multiple org IDs
 	// API endpoint to push data
 	APIURL string
 	// GPM (GoLogin Profile Manager) - support multiple profiles
@@ -45,6 +45,9 @@ func Load() *Config {
 		profileIDs = splitEnv("PROFILE_IDS", []string{})
 	}
 
+	// Parse ORG_IDS (comma-separated integers)
+	orgIDs := parseIntSlice(getEnv("ORG_IDS", ""), []int{2})
+
 	return &Config{
 		LogLevel:        getEnv("LOG_LEVEL", "info"),
 		CronSchedule:    getEnv("CRON_SCHEDULE", "0 */6 * * *"),
@@ -53,7 +56,7 @@ func Load() *Config {
 		BotName:         getEnv("BOT_NAME", "bot-test"),
 		MongoURI:        getEnv("MONGO_URI", "mongodb://localhost:27017"),
 		MongoDB:         getEnv("MONGO_DB", "tiktok_crawler"),
-		OrgID:           getEnvInt("ORG_ID", 2),
+		OrgIDs:          orgIDs,
 		APIURL:          getEnv("API_URL", ""),
 		GPMAPI:          gpmAPI,
 		ProfileIDs:      profileIDs,
@@ -104,6 +107,41 @@ func splitEnv(key string, fallback []string) []string {
 			}
 			start = i + 1
 		}
+	}
+	return result
+}
+
+// parseIntSlice parses comma-separated integers from string
+func parseIntSlice(s string, fallback []int) []int {
+	if s == "" {
+		return fallback
+	}
+	
+	var result []int
+	start := 0
+	for i := 0; i <= len(s); i++ {
+		if i == len(s) || s[i] == ',' {
+			part := s[start:i]
+			if part != "" {
+				n := 0
+				valid := true
+				for _, c := range part {
+					if c < '0' || c > '9' {
+						valid = false
+						break
+					}
+					n = n*10 + int(c-'0')
+				}
+				if valid {
+					result = append(result, n)
+				}
+			}
+			start = i + 1
+		}
+	}
+	
+	if len(result) == 0 {
+		return fallback
 	}
 	return result
 }

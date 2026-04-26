@@ -33,28 +33,31 @@ func main() {
 	// videoRepo := repository.NewVideoRepository(mongoDB.Database(), log)
 	keywordRepo := repository.NewKeywordRepository(mongoDB.Database(), log)
 
-	// Load keywords from MongoDB by org_id from .env
-	log.Info("Loading keywords from MongoDB", zap.Int("org_id", cfg.OrgID))
+	// Load keywords from MongoDB by org_ids from .env
+	log.Info("Loading keywords from MongoDB", zap.Ints("org_ids", cfg.OrgIDs))
 
-	keywords, err := keywordRepo.FindByOrgIDs([]int{cfg.OrgID})
+	keywords, err := keywordRepo.FindByOrgIDs(cfg.OrgIDs)
 	if err != nil {
 		log.Fatal("Failed to load keywords from MongoDB", zap.Error(err))
 	}
 
 	log.Info("Keywords loaded from MongoDB",
 		zap.Int("count", len(keywords)),
-		zap.Int("org_id", cfg.OrgID),
+		zap.Ints("org_ids", cfg.OrgIDs),
 	)
 
 	// Build keyword list
 	var keywordList []string
 	for _, kw := range keywords {
 		keywordList = append(keywordList, kw.Keyword)
-		log.Info("Keyword loaded", zap.String("keyword", kw.Keyword))
+		log.Info("Keyword loaded", 
+			zap.String("keyword", kw.Keyword),
+			zap.Int("org_id", kw.OrgID),
+		)
 	}
 
 	if len(keywordList) == 0 {
-		log.Warn("No keywords found for org_id, exiting", zap.Int("org_id", cfg.OrgID))
+		log.Warn("No keywords found for org_ids, exiting", zap.Ints("org_ids", cfg.OrgIDs))
 		return
 	}
 
