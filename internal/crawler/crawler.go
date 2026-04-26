@@ -91,8 +91,12 @@ func (c *Crawler) connectGPM(pw *playwright.Playwright, gpmClient *gpm.Client) (
 		return nil, nil, err
 	}
 
-	// Connect via CDP
-	cdpURL := fmt.Sprintf("http://%s", debugAddr)
+	// Wait for browser to be ready
+	c.log.Info("Waiting for GPM browser to be ready...")
+	time.Sleep(3 * time.Second)
+
+	// Connect via CDP with ws:// protocol
+	cdpURL := fmt.Sprintf("ws://%s", debugAddr)
 	c.log.Info("Connecting to GPM via CDP", zap.String("cdp_url", cdpURL))
 
 	browser, err := pw.Chromium.ConnectOverCDP(cdpURL)
