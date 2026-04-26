@@ -74,25 +74,45 @@ func (c *Client) StartProfile(profileID string) (string, error) {
 func (c *Client) getWebSocketURL(debugAddr string) (string, error) {
 	// Query CDP /json/version to get webSocketDebuggerUrl
 	url := fmt.Sprintf("http://%s/json/version", debugAddr)
-	c.log.Info("Querying CDP endpoint", zap.String("url", url))
 
-	resp, err := c.client.Get(url)
-	if err != nil {
-		return "", fmt.Errorf("failed to query CDP: %w", err)
+	// Retry up to 5 times with 2 second delay (total ~10 seconds)
+	maxRetries := 5
+	for i := 0; i < maxRetries; i++ {
+		if i > 0 {
+			c.log.Info("Retrying CDP connection", zap.Int("attempt", i+1), zap.Int("max", maxRetries))
+			time.Sleep(2 * time.Second)
+		} else {
+			// First attempt: wait 2 seconds for browser to start
+			c.log.Info("Waiting for GPM browser to start...")
+			time.Sleep(2 * time.Second)
+		}
+
+		c.log.Info("Querying CDP endpoint", zap.String("url", url), zap.Int("attempt", i+1))
+
+		resp, err := c.client.Get(url)
+		if err != nil {
+			if i == maxRetries-1 {
+				return "", fmt.Errorf("failed to query CDP after %d attempts: %w", maxRetries, err)
+			}
+			continue
+		}
+		defer resp.Body.Close()
+
+		var result map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			return "", fmt.Errorf("failed to decode CDP response: %w", err)
+		}
+
+		wsURL, ok := result["webSocketDebuggerUrl"].(string)
+		if !ok || wsURL == "" {
+			return "", fmt.Errorf("webSocketDebuggerUrl not found in CDP response")
+		}
+
+		c.log.Info("Got WebSocket URL from CDP", zap.String("ws_url", wsURL))
+		return wsURL, nil
 	}
-	defer resp.Body.Close()
 
-	var result map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("failed to decode CDP response: %w", err)
-	}
-
-	wsURL, ok := result["webSocketDebuggerUrl"].(string)
-	if !ok || wsURL == "" {
-		return "", fmt.Errorf("webSocketDebuggerUrl not found in CDP response")
-	}
-
-	return wsURL, nil
+	return "", fmt.Errorf("failed to get WebSocket URL after %d attempts", maxRetries)
 }
 
 func (c *Client) StopProfile(profileID string) error {
