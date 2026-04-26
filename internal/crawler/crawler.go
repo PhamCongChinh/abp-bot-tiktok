@@ -5,13 +5,12 @@ import (
 	"abp-bot-tiktok/internal/parser"
 	"abp-bot-tiktok/internal/repository"
 	"abp-bot-tiktok/internal/utils"
+	"abp-bot-tiktok/pkg/api"
 	"abp-bot-tiktok/pkg/config"
 	"abp-bot-tiktok/pkg/gpm"
 	"encoding/json"
 	"fmt"
 	"net/url"
-	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -29,13 +28,20 @@ type Crawler struct {
 	cfg       *config.Config
 	log       *zap.Logger
 	videoRepo *repository.VideoRepository
+	apiClient *api.Client
 }
 
 func New(cfg *config.Config, log *zap.Logger, videoRepo *repository.VideoRepository) *Crawler {
+	var apiClient *api.Client
+	if cfg.APIURL != "" {
+		apiClient = api.NewClient(cfg.APIURL, log)
+		log.Info("API client initialized", zap.String("url", cfg.APIURL))
+	}
 	return &Crawler{
 		cfg:       cfg,
 		log:       log,
 		videoRepo: videoRepo,
+		apiClient: apiClient,
 	}
 }
 
@@ -358,37 +364,20 @@ func (c *Crawler) parseVideos(keyword string, items []map[string]any) []models.V
 }
 
 func (c *Crawler) saveToFile(keyword string, videos []models.VideoItem) {
-	if err := os.MkdirAll(c.cfg.OutputDir, 0755); err != nil {
-		c.log.Error("Failed to create output dir", zap.Error(err))
-		return
-	}
-	date := time.Now().Format("2006-01-02")
-	safe := url.QueryEscape(keyword)
-	filename := filepath.Join(c.cfg.OutputDir, fmt.Sprintf("keyword_%s_%s.json", safe, date))
-
 	// Convert to TiktokPost format
 	var posts []parser.TiktokPost
 	for _, v := range videos {
 		post := parser.FromVideoItem(v)
 		posts = append(posts, post)
-
-		// Log từng post dạng JSON
 		b, _ := json.Marshal(post)
 		c.log.Info("📄 Post parsed", zap.String("keyword", keyword), zap.String("json", string(b)))
 	}
 
-	f, err := os.Create(filename)
-	if err != nil {
-		c.log.Error("Failed to create file", zap.Error(err))
+	// Post to API
+	if err := c.apiClient.PostPosts(posts); err != nil {
+		c.log.Error("Failed to post to API", zap.String("keyword", keyword), zap.Error(err))
 		return
 	}
-	defer f.Close()
-
-	enc := json.NewEncoder(f)
-	enc.SetIndent("", "  ")
-	_ = enc.Encode(posts)
-
-	c.log.Info("💾 Saved to file", zap.String("file", filename), zap.Int("count", len(posts)))
 }
 
 func truncate(s string, n int) string {
