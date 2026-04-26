@@ -17,6 +17,19 @@ type Client struct {
 	log        *zap.Logger
 }
 
+type postRequest struct {
+	Index  string              `json:"index"`
+	Data   []parser.TiktokPost `json:"data"`
+	Upsert bool                `json:"upsert"`
+}
+
+type postResponse struct {
+	Success bool   `json:"success"`
+	Total   int    `json:"total"`
+	Status  int    `json:"status"`
+	Error   string `json:"error"`
+}
+
 func NewClient(baseURL string, log *zap.Logger) *Client {
 	return &Client{
 		baseURL: baseURL,
@@ -27,17 +40,31 @@ func NewClient(baseURL string, log *zap.Logger) *Client {
 	}
 }
 
-func (c *Client) PostPosts(posts []parser.TiktokPost) error {
+func (c *Client) PostUnclassified(posts []parser.TiktokPost) error {
+	return c.post("/api/v1/posts/insert-unclassified-org-posts", "not_classify_org_posts", posts)
+}
+
+func (c *Client) PostClassified(posts []parser.TiktokPost) error {
+	return c.post("/api/v1/posts/insert-posts", "classify_org_posts", posts)
+}
+
+func (c *Client) post(path, index string, posts []parser.TiktokPost) error {
 	if len(posts) == 0 {
 		return nil
 	}
 
-	body, err := json.Marshal(posts)
-	if err != nil {
-		return fmt.Errorf("failed to marshal posts: %w", err)
+	payload := postRequest{
+		Index:  index,
+		Data:   posts,
+		Upsert: true,
 	}
 
-	url := fmt.Sprintf("%s/api/posts", c.baseURL)
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal payload: %w", err)
+	}
+
+	url := fmt.Sprintf("http://%s%s", c.baseURL, path)
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
@@ -50,12 +77,13 @@ func (c *Client) PostPosts(posts []parser.TiktokPost) error {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+	if resp.StatusCode >= 400 {
 		return fmt.Errorf("server returned status %d", resp.StatusCode)
 	}
 
-	c.log.Info("Posts sent to API",
+	c.log.Info("✅ Posts sent to API",
 		zap.String("url", url),
+		zap.String("index", index),
 		zap.Int("count", len(posts)),
 		zap.Int("status", resp.StatusCode),
 	)

@@ -373,8 +373,8 @@ func (c *Crawler) saveToFile(keyword string, videos []models.VideoItem) {
 		c.log.Info("📄 Post parsed", zap.String("keyword", keyword), zap.String("json", string(b)))
 	}
 
-	// Post to API
-	if err := c.apiClient.PostPosts(posts); err != nil {
+	// Post to API (unclassified)
+	if err := c.apiClient.PostUnclassified(posts); err != nil {
 		c.log.Error("Failed to post to API", zap.String("keyword", keyword), zap.Error(err))
 		return
 	}
