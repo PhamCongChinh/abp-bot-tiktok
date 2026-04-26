@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -31,6 +32,12 @@ type postResponse struct {
 }
 
 func NewClient(baseURL string, log *zap.Logger) *Client {
+	// Normalize baseURL - strip trailing slash, add http:// if missing
+	if !strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://") {
+		baseURL = "http://" + baseURL
+	}
+	baseURL = strings.TrimRight(baseURL, "/")
+
 	return &Client{
 		baseURL: baseURL,
 		httpClient: &http.Client{
@@ -64,7 +71,7 @@ func (c *Client) post(path, index string, posts []parser.TiktokPost) error {
 		return fmt.Errorf("failed to marshal payload: %w", err)
 	}
 
-	url := fmt.Sprintf("http://%s%s", c.baseURL, path)
+	url := fmt.Sprintf("%s%s", c.baseURL, path)
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
