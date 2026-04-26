@@ -291,7 +291,6 @@ func (c *Crawler) crawlKeyword(page playwright.Page, keyword string) {
 
 	videosByKeyword := make(map[string][]map[string]any)
 	var mu sync.Mutex
-	currentKeyword := keyword
 
 	// Setup response interceptor for this page
 	page.On("response", func(res playwright.Response) {
