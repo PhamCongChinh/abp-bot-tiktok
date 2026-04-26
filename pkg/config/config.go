@@ -10,7 +10,6 @@ type Config struct {
 	LogLevel     string
 	CronSchedule string
 	OutputDir    string
-	ChromePath   string
 	Debug        bool
 	BotName      string
 	// MongoDB
@@ -44,7 +43,6 @@ func Load() *Config {
 		LogLevel:        getEnv("LOG_LEVEL", "info"),
 		CronSchedule:    getEnv("CRON_SCHEDULE", "0 */6 * * *"),
 		OutputDir:       getEnv("OUTPUT_DIR", "./data"),
-		ChromePath:      getEnv("CHROME_PATH", "C:/Program Files/Google/Chrome/Application/chrome.exe"),
 		Debug:           getEnv("DEBUG", "true") == "true",
 		BotName:         getEnv("BOT_NAME", "bot-test"),
 		MongoURI:        getEnv("MONGO_URI", "mongodb://localhost:27017"),

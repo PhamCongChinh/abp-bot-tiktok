@@ -75,25 +75,9 @@ func (c *Crawler) Run() {
 			}
 		}()
 	} else {
-		// Launch local Chrome
-		c.log.Info("Using local Chrome")
-		browser, err = pw.Chromium.Launch(playwright.BrowserTypeLaunchOptions{
-			Headless:       playwright.Bool(false),
-			ExecutablePath: playwright.String(c.cfg.ChromePath),
-			Args:           []string{"--disable-blink-features=AutomationControlled"},
-		})
-		if err != nil {
-			c.log.Error("Could not launch browser", zap.Error(err))
-			return
-		}
-		defer browser.Close()
-
-		context, err = browser.NewContext()
-		if err != nil {
-			c.log.Error("Could not create context", zap.Error(err))
-			return
-		}
-		defer context.Close()
+		// GPM config required
+		c.log.Error("GPM config required. Set GPM_API and PROFILE_ID in .env")
+		return
 	}
 
 	c.crawlSearch(context, c.cfg.Keywords)
