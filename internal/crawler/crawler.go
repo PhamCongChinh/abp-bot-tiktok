@@ -41,74 +41,98 @@ func New(cfg *config.Config, log *zap.Logger, videoRepo *repository.VideoReposit
 func (c *Crawler) Run() {
 	c.log.Info("Crawl cycle started")
 
+	if !c.cfg.UseGPM {
+		c.log.Error("GPM config required. Set GPM_API and PROFILE_IDS in .env")
+		return
+	}
+
+	numProfiles := len(c.cfg.ProfileIDs)
+	c.log.Info("Running with profiles",
+		zap.Int("profiles", numProfiles),
+		zap.Int("total_keywords", len(c.cfg.Keywords)),
+	)
+
+	// Split keywords evenly across profiles
+	chunks := splitKeywords(c.cfg.Keywords, numProfiles)
+	for i, chunk := range chunks {
+		c.log.Info("Keyword chunk assigned",
+			zap.Int("profile_index", i),
+			zap.String("profile_id", c.cfg.ProfileIDs[i]),
+			zap.Int("keywords", len(chunk)),
+		)
+	}
+
+	// Run each profile in parallel goroutine
+	var wg sync.WaitGroup
+	for i, profileID := range c.cfg.ProfileIDs {
+		wg.Add(1)
+		go func(profileID string, keywords []string, idx int) {
+			defer wg.Done()
+			c.runProfile(profileID, keywords, idx)
+		}(profileID, chunks[i], i)
+	}
+
+	wg.Wait()
+	c.log.Info("Crawl cycle finished")
+}
+
+func splitKeywords(keywords []string, n int) [][]string {
+	chunks := make([][]string, n)
+	for i, kw := range keywords {
+		chunks[i%n] = append(chunks[i%n], kw)
+	}
+	return chunks
+}
+
+func (c *Crawler) runProfile(profileID string, keywords []string, idx int) {
+	log := c.log.With(zap.Int("profile_index", idx), zap.String("profile_id", profileID))
+	log.Info("Profile starting", zap.Int("keywords", len(keywords)))
+
 	pw, err := playwright.Run()
 	if err != nil {
-		c.log.Error("Could not start playwright", zap.Error(err))
+		log.Error("Could not start playwright", zap.Error(err))
 		return
 	}
 	defer pw.Stop()
 
-	var browser playwright.Browser
-	var context playwright.BrowserContext
-	var gpmClient *gpm.Client
-
-	if c.cfg.UseGPM {
-		// Connect to GPM profile via CDP
-		c.log.Info("Using GPM profile",
-			zap.String("gpm_api", c.cfg.GPMAPI),
-			zap.String("profile_id", c.cfg.ProfileID),
-		)
-
-		gpmClient = gpm.NewClient(c.cfg.GPMAPI, c.log)
-		browser, context, err = c.connectGPM(pw, gpmClient)
-		if err != nil {
-			c.log.Error("Failed to connect GPM", zap.Error(err))
-			return
-		}
-		// Ensure GPM profile is stopped when done
-		defer func() {
-			if browser != nil {
-				browser.Close()
-			}
-			if gpmClient != nil {
-				gpmClient.StopProfile(c.cfg.ProfileID)
-			}
-		}()
-	} else {
-		// GPM config required
-		c.log.Error("GPM config required. Set GPM_API and PROFILE_ID in .env")
+	gpmClient := gpm.NewClient(c.cfg.GPMAPI, log)
+	browser, context, err := c.connectGPM(pw, gpmClient, profileID, log)
+	if err != nil {
+		log.Error("Failed to connect GPM", zap.Error(err))
 		return
 	}
+	defer func() {
+		if browser != nil {
+			browser.Close()
+		}
+		gpmClient.StopProfile(profileID)
+	}()
 
-	c.crawlSearch(context, c.cfg.Keywords)
-	c.log.Info("Crawl cycle finished")
+	c.crawlSearch(context, keywords)
+	log.Info("Profile finished")
 }
 
-func (c *Crawler) connectGPM(pw *playwright.Playwright, gpmClient *gpm.Client) (playwright.Browser, playwright.BrowserContext, error) {
-	// Start GPM profile and get WebSocket URL (with retry)
-	wsURL, err := gpmClient.StartProfile(c.cfg.ProfileID)
+func (c *Crawler) connectGPM(pw *playwright.Playwright, gpmClient *gpm.Client, profileID string, log *zap.Logger) (playwright.Browser, playwright.BrowserContext, error) {
+	wsURL, err := gpmClient.StartProfile(profileID)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	// Connect via CDP WebSocket
-	c.log.Info("Connecting to GPM via CDP", zap.String("ws_url", wsURL))
-
+	log.Info("Connecting to GPM via CDP", zap.String("ws_url", wsURL))
 	browser, err := pw.Chromium.ConnectOverCDP(wsURL)
 	if err != nil {
-		gpmClient.StopProfile(c.cfg.ProfileID)
+		gpmClient.StopProfile(profileID)
 		return nil, nil, fmt.Errorf("failed to connect CDP: %w", err)
 	}
 
-	// Get existing context
 	contexts := browser.Contexts()
 	if len(contexts) == 0 {
 		browser.Close()
-		gpmClient.StopProfile(c.cfg.ProfileID)
+		gpmClient.StopProfile(profileID)
 		return nil, nil, fmt.Errorf("no browser context found from GPM")
 	}
 
-	c.log.Info("Connected to GPM profile successfully", zap.Int("contexts", len(contexts)))
+	log.Info("Connected to GPM profile successfully", zap.Int("contexts", len(contexts)))
 	return browser, contexts[0], nil
 }
 

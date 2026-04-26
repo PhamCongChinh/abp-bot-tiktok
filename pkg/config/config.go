@@ -16,10 +16,10 @@ type Config struct {
 	MongoURI string
 	MongoDB  string
 	OrgID    int // Organization ID to load keywords from
-	// GPM (GoLogin Profile Manager)
-	GPMAPI    string
-	ProfileID string
-	UseGPM    bool
+	// GPM (GoLogin Profile Manager) - support multiple profiles
+	GPMAPI     string
+	ProfileIDs []string // Multiple profile IDs separated by comma
+	UseGPM     bool
 	// Keywords (loaded from MongoDB or .env)
 	Keywords []string
 	// Batch settings
@@ -37,7 +37,11 @@ func Load() *Config {
 	_ = godotenv.Load()
 
 	gpmAPI := getEnv("GPM_API", "")
-	profileID := getEnv("PROFILE_ID", "")
+	profileIDsStr := getEnv("PROFILE_IDS", "")
+	var profileIDs []string
+	if profileIDsStr != "" {
+		profileIDs = splitEnv("PROFILE_IDS", []string{})
+	}
 
 	return &Config{
 		LogLevel:        getEnv("LOG_LEVEL", "info"),
@@ -49,8 +53,8 @@ func Load() *Config {
 		MongoDB:         getEnv("MONGO_DB", "tiktok_crawler"),
 		OrgID:           getEnvInt("ORG_ID", 2),
 		GPMAPI:          gpmAPI,
-		ProfileID:       profileID,
-		UseGPM:          gpmAPI != "" && profileID != "",
+		ProfileIDs:      profileIDs,
+		UseGPM:          gpmAPI != "" && len(profileIDs) > 0,
 		BatchMin:        getEnvInt("BATCH_MIN", 5),
 		BatchMax:        getEnvInt("BATCH_MAX", 10),
 		SleepMinKeyword: getEnvInt("SLEEP_MIN_KEYWORD", 60),
