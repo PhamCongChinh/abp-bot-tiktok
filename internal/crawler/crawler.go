@@ -50,15 +50,30 @@ func (c *Crawler) Run() {
 
 	var browser playwright.Browser
 	var context playwright.BrowserContext
+	var gpmClient *gpm.Client
 
 	if c.cfg.UseGPM {
 		// Connect to GPM profile via CDP
-		c.log.Info("Using GPM profile", zap.String("profile_id", c.cfg.ProfileID))
-		browser, context, err = c.connectGPM(pw)
+		c.log.Info("Using GPM profile",
+			zap.String("gpm_api", c.cfg.GPMAPI),
+			zap.String("profile_id", c.cfg.ProfileID),
+		)
+
+		gpmClient = gpm.NewClient(c.cfg.GPMAPI, c.log)
+		browser, context, err = c.connectGPM(pw, gpmClient)
 		if err != nil {
 			c.log.Error("Failed to connect GPM", zap.Error(err))
 			return
 		}
+		// Ensure GPM profile is stopped when done
+		defer func() {
+			if browser != nil {
+				browser.Close()
+			}
+			if gpmClient != nil {
+				gpmClient.StopProfile(c.cfg.ProfileID)
+			}
+		}()
 	} else {
 		// Launch local Chrome
 		c.log.Info("Using local Chrome")
@@ -85,10 +100,7 @@ func (c *Crawler) Run() {
 	c.log.Info("Crawl cycle finished")
 }
 
-func (c *Crawler) connectGPM(pw *playwright.Playwright) (playwright.Browser, playwright.BrowserContext, error) {
-	// Import GPM client
-	gpmClient := gpm.NewClient(c.cfg.GPMAPI, c.log)
-
+func (c *Crawler) connectGPM(pw *playwright.Playwright, gpmClient *gpm.Client) (playwright.Browser, playwright.BrowserContext, error) {
 	// Start GPM profile
 	debugAddr, err := gpmClient.StartProfile(c.cfg.ProfileID)
 	if err != nil {
@@ -97,6 +109,8 @@ func (c *Crawler) connectGPM(pw *playwright.Playwright) (playwright.Browser, pla
 
 	// Connect via CDP
 	cdpURL := fmt.Sprintf("http://%s", debugAddr)
+	c.log.Info("Connecting to GPM via CDP", zap.String("cdp_url", cdpURL))
+
 	browser, err := pw.Chromium.ConnectOverCDP(cdpURL)
 	if err != nil {
 		gpmClient.StopProfile(c.cfg.ProfileID)
@@ -111,7 +125,7 @@ func (c *Crawler) connectGPM(pw *playwright.Playwright) (playwright.Browser, pla
 		return nil, nil, fmt.Errorf("no browser context found from GPM")
 	}
 
-	c.log.Info("Connected to GPM profile successfully")
+	c.log.Info("Connected to GPM profile successfully", zap.Int("contexts", len(contexts)))
 	return browser, contexts[0], nil
 }
 
