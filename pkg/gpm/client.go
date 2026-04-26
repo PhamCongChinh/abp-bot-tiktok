@@ -57,19 +57,42 @@ func (c *Client) StartProfile(profileID string) (string, error) {
 
 	debugAddr := result.Data.RemoteDebuggingAddress
 	if debugAddr == "" {
-		// Try alternative field names
-		c.log.Warn("remote_debugging_address is empty, checking response structure")
-
-		// Parse as generic map to see what fields exist
-		var genericResult map[string]interface{}
-		json.Unmarshal(body, &genericResult)
-		c.log.Info("Response structure", zap.Any("data", genericResult))
-
+		c.log.Warn("remote_debugging_address is empty")
 		return "", fmt.Errorf("empty remote_debugging_address in response")
 	}
 
-	c.log.Info("GPM profile started", zap.String("debug_addr", debugAddr))
-	return debugAddr, nil
+	// Get WebSocket endpoint from CDP
+	wsURL, err := c.getWebSocketURL(debugAddr)
+	if err != nil {
+		return "", fmt.Errorf("failed to get WebSocket URL: %w", err)
+	}
+
+	c.log.Info("GPM profile started", zap.String("debug_addr", debugAddr), zap.String("ws_url", wsURL))
+	return wsURL, nil
+}
+
+func (c *Client) getWebSocketURL(debugAddr string) (string, error) {
+	// Query CDP /json/version to get webSocketDebuggerUrl
+	url := fmt.Sprintf("http://%s/json/version", debugAddr)
+	c.log.Info("Querying CDP endpoint", zap.String("url", url))
+
+	resp, err := c.client.Get(url)
+	if err != nil {
+		return "", fmt.Errorf("failed to query CDP: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var result map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("failed to decode CDP response: %w", err)
+	}
+
+	wsURL, ok := result["webSocketDebuggerUrl"].(string)
+	if !ok || wsURL == "" {
+		return "", fmt.Errorf("webSocketDebuggerUrl not found in CDP response")
+	}
+
+	return wsURL, nil
 }
 
 func (c *Client) StopProfile(profileID string) error {

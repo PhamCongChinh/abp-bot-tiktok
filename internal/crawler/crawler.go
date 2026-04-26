@@ -85,21 +85,20 @@ func (c *Crawler) Run() {
 }
 
 func (c *Crawler) connectGPM(pw *playwright.Playwright, gpmClient *gpm.Client) (playwright.Browser, playwright.BrowserContext, error) {
-	// Start GPM profile
-	debugAddr, err := gpmClient.StartProfile(c.cfg.ProfileID)
+	// Start GPM profile and get WebSocket URL
+	wsURL, err := gpmClient.StartProfile(c.cfg.ProfileID)
 	if err != nil {
 		return nil, nil, err
 	}
 
 	// Wait for browser to be ready
 	c.log.Info("Waiting for GPM browser to be ready...")
-	time.Sleep(3 * time.Second)
+	time.Sleep(2 * time.Second)
 
-	// Connect via CDP with ws:// protocol
-	cdpURL := fmt.Sprintf("ws://%s", debugAddr)
-	c.log.Info("Connecting to GPM via CDP", zap.String("cdp_url", cdpURL))
+	// Connect via CDP WebSocket
+	c.log.Info("Connecting to GPM via CDP", zap.String("ws_url", wsURL))
 
-	browser, err := pw.Chromium.ConnectOverCDP(cdpURL)
+	browser, err := pw.Chromium.ConnectOverCDP(wsURL)
 	if err != nil {
 		gpmClient.StopProfile(c.cfg.ProfileID)
 		return nil, nil, fmt.Errorf("failed to connect CDP: %w", err)
