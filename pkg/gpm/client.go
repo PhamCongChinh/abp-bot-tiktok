@@ -121,15 +121,21 @@ func (c *Client) StopProfile(profileID string) error {
 
 	resp, err := c.client.Get(url)
 	if err != nil {
+		c.log.Warn("Failed to stop profile (network error)", zap.Error(err))
 		return fmt.Errorf("failed to stop profile: %w", err)
 	}
 	defer resp.Body.Close()
 
+	body, _ := io.ReadAll(resp.Body)
+
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		c.log.Warn("GPM stop returned non-200", zap.Int("status", resp.StatusCode), zap.String("body", string(body)))
+		c.log.Warn("GPM stop returned non-200", 
+			zap.Int("status", resp.StatusCode), 
+			zap.String("body", string(body)),
+		)
+		return fmt.Errorf("GPM stop returned status %d", resp.StatusCode)
 	}
 
-	c.log.Info("GPM profile stopped")
+	c.log.Info("✅ GPM profile stopped successfully")
 	return nil
 }

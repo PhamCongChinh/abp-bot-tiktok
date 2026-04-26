@@ -103,20 +103,87 @@ func (c *Crawler) runProfile(profileID string, keywords []string, idx int) {
 	defer pw.Stop()
 
 	gpmClient := gpm.NewClient(c.cfg.GPMAPI, log)
-	browser, context, err := c.connectGPM(pw, gpmClient, profileID, log)
+	browser, context, err := c.connectGPMWithRetry(pw, gpmClient, profileID, log, 3)
 	if err != nil {
-		log.Error("Failed to connect GPM", zap.Error(err))
+		log.Error("Failed to connect GPM after retries", zap.Error(err))
 		return
 	}
 	defer func() {
 		if browser != nil {
-			browser.Close()
+			if err := browser.Close(); err != nil {
+				log.Warn("Failed to close browser", zap.Error(err))
+			}
 		}
 		gpmClient.StopProfile(profileID)
 	}()
 
-	c.crawlSearch(context, keywords)
+	// Monitor browser connection and crawl
+	c.crawlSearchWithMonitoring(browser, context, keywords, pw, gpmClient, profileID, log)
 	log.Info("Profile finished")
+}
+
+// connectGPMWithRetry attempts to connect to GPM with retry logic
+func (c *Crawler) connectGPMWithRetry(pw *playwright.Playwright, gpmClient *gpm.Client, profileID string, log *zap.Logger, maxRetries int) (playwright.Browser, playwright.BrowserContext, error) {
+	var browser playwright.Browser
+	var context playwright.BrowserContext
+	var err error
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		browser, context, err = c.connectGPM(pw, gpmClient, profileID, log)
+		if err == nil {
+			log.Info("✅ Connected to GPM successfully", zap.Int("attempt", attempt))
+			return browser, context, nil
+		}
+
+		log.Warn("Failed to connect to GPM",
+			zap.Int("attempt", attempt),
+			zap.Int("max_retries", maxRetries),
+			zap.Error(err),
+		)
+
+		if attempt < maxRetries {
+			// Clean up failed connection
+			if browser != nil {
+				browser.Close()
+			}
+			gpmClient.StopProfile(profileID)
+			
+			log.Info("Waiting before retry...", zap.Int("seconds", 5))
+			time.Sleep(5 * time.Second)
+		}
+	}
+
+	return nil, nil, fmt.Errorf("failed to connect GPM after %d attempts: %w", maxRetries, err)
+}
+
+// crawlSearchWithMonitoring wraps crawlSearch with browser connection monitoring
+func (c *Crawler) crawlSearchWithMonitoring(browser playwright.Browser, context playwright.BrowserContext, keywords []string, pw *playwright.Playwright, gpmClient *gpm.Client, profileID string, log *zap.Logger) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("Panic recovered in crawlSearch", zap.Any("panic", r))
+		}
+	}()
+
+	// Check if browser is still connected before crawling
+	if !c.isBrowserConnected(browser, log) {
+		log.Error("Browser disconnected before crawling started")
+		return
+	}
+
+	c.crawlSearch(context, keywords)
+}
+
+// isBrowserConnected checks if browser connection is still alive
+func (c *Crawler) isBrowserConnected(browser playwright.Browser, log *zap.Logger) bool {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Warn("Browser connection check failed", zap.Any("panic", r))
+		}
+	}()
+
+	// Try to get contexts - if this fails, browser is disconnected
+	contexts := browser.Contexts()
+	return len(contexts) > 0
 }
 
 func (c *Crawler) connectGPM(pw *playwright.Playwright, gpmClient *gpm.Client, profileID string, log *zap.Logger) (playwright.Browser, playwright.BrowserContext, error) {
@@ -156,149 +223,32 @@ func (c *Crawler) crawlSearch(context playwright.BrowserContext, keywords []stri
 		batch := keywords[i:min(i+batchSize, total)]
 		c.log.Info("New session", zap.Int("keywords", len(batch)))
 
-		page, err := context.NewPage()
-		if err != nil {
-			c.log.Error("Could not create page", zap.Error(err))
-			i += batchSize
-			continue
-		}
-
-		videosByKeyword := make(map[string][]map[string]any)
-		var mu sync.Mutex
-		currentKeyword := ""
-
-		page.On("response", func(res playwright.Response) {
-			mu.Lock()
-			kw := currentKeyword
-			mu.Unlock()
-
-			if kw == "" {
-				return
-			}
-			if !containsAny(res.URL(), []string{searchAPI}) {
-				return
-			}
-
-			go func(res playwright.Response, kw string) {
-				c.log.Debug("API response intercepted",
-					zap.String("keyword", kw),
-					zap.String("url", res.URL()),
-				)
-
-				var body map[string]any
-				if err := res.JSON(&body); err != nil || body == nil {
-					c.log.Warn("Failed to parse API response body", zap.String("keyword", kw), zap.Error(err))
-					return
-				}
-				if statusCode, ok := body["status_code"].(float64); !ok || statusCode != 0 {
-					c.log.Warn("API returned non-zero status",
-						zap.String("keyword", kw),
-						zap.Any("status_code", body["status_code"]),
-					)
-					return
-				}
-				items, _ := body["item_list"].([]any)
-				c.log.Info("API batch received",
-					zap.String("keyword", kw),
-					zap.Int("items_in_batch", len(items)),
-				)
-
-				mu.Lock()
-				defer mu.Unlock()
-				seen := make(map[string]bool)
-				for _, existing := range videosByKeyword[kw] {
-					if id, ok := existing["id"].(string); ok {
-						seen[id] = true
-					}
-				}
-				newCount := 0
-				for _, raw := range items {
-					item, ok := raw.(map[string]any)
-					if !ok {
-						continue
-					}
-					id, _ := item["id"].(string)
-					if id == "" || seen[id] {
-						continue
-					}
-					seen[id] = true
-					videosByKeyword[kw] = append(videosByKeyword[kw], item)
-					newCount++
-				}
-				c.log.Info("New videos added to buffer",
-					zap.String("keyword", kw),
-					zap.Int("new", newCount),
-					zap.Int("total_buffered", len(videosByKeyword[kw])),
-				)
-			}(res, kw)
-		})
-
-		if _, err := page.Goto(tiktokURL, playwright.PageGotoOptions{
-			WaitUntil: playwright.WaitUntilStateDomcontentloaded,
-		}); err != nil {
-			c.log.Warn("Failed to load TikTok home", zap.Error(err))
-		}
-		utils.Sleep(4000, 7000)
-		_ = utils.RandomMouseMove(page)
-		utils.Sleep(500, 1500)
-
+		// Process each keyword with its own tab
 		for _, keyword := range batch {
-			c.log.Info("Searching keyword", zap.String("keyword", keyword))
-
-			mu.Lock()
-			currentKeyword = keyword
-			videosByKeyword[keyword] = nil
-			mu.Unlock()
-
-			encoded := url.QueryEscape(keyword)
-			ts := time.Now().UnixMilli()
-			searchURL := fmt.Sprintf("%s/search/video?q=%s&t=%d", tiktokURL, encoded, ts)
-
-			if _, err := page.Goto(searchURL, playwright.PageGotoOptions{
-				WaitUntil: playwright.WaitUntilStateDomcontentloaded,
-			}); err != nil {
-				c.log.Warn("Failed to navigate to search", zap.String("keyword", keyword), zap.Error(err))
+			// Create new page for each keyword
+			page, err := c.createPageWithRetry(context, 3)
+			if err != nil {
+				c.log.Error("Failed to create page after retries", zap.String("keyword", keyword), zap.Error(err))
 				continue
 			}
-			utils.Sleep(6000, 9000)
 
-			scrollTimes := utils.RandInt(1, 4)
-			_ = utils.HumanScroll(page, scrollTimes)
-			_ = utils.RandomViewVideo(page)
+			// Crawl single keyword with dedicated page
+			c.crawlKeyword(page, keyword)
 
-			utils.Sleep(1500, 2500)
-
-			mu.Lock()
-			items := videosByKeyword[keyword]
-			mu.Unlock()
-
-			c.log.Info("Videos collected", zap.String("keyword", keyword), zap.Int("count", len(items)))
-
-			results := c.parseVideos(keyword, items)
-			if len(results) > 0 {
-				// Save to MongoDB (commented out)
-				// if c.videoRepo != nil {
-				// 	if err := c.videoRepo.BulkUpsert(results); err != nil {
-				// 		c.log.Error("Failed to save to MongoDB", zap.String("keyword", keyword), zap.Error(err))
-				// 	} else {
-				// 		c.log.Info("✅ Saved to MongoDB", zap.String("keyword", keyword), zap.Int("count", len(results)))
-				// 	}
-				// }
-				// Parse to TiktokPost format and save to JSON file
-				c.saveToFile(keyword, results)
+			// Close page immediately after crawling
+			if err := page.Close(); err != nil {
+				c.log.Warn("Failed to close page", zap.String("keyword", keyword), zap.Error(err))
+			} else {
+				c.log.Info("✅ Tab closed", zap.String("keyword", keyword))
 			}
 
-			mu.Lock()
-			currentKeyword = ""
-			mu.Unlock()
-
+			// Sleep between keywords
 			sleepSec := utils.RandInt(c.cfg.SleepMinKeyword, c.cfg.SleepMaxKeyword)
 			c.log.Info("Waiting before next keyword", zap.Int("seconds", sleepSec))
 			time.Sleep(time.Duration(sleepSec) * time.Second)
 		}
 
-		_ = page.Close()
-
+		// Rest between sessions
 		restSec := utils.RandInt(c.cfg.RestMinSession, c.cfg.RestMaxSession)
 		c.log.Info("Resting before next session", zap.Int("seconds", restSec))
 		time.Sleep(time.Duration(restSec) * time.Second)
@@ -307,6 +257,147 @@ func (c *Crawler) crawlSearch(context playwright.BrowserContext, keywords []stri
 	}
 
 	c.log.Info("Done crawling all keywords")
+}
+
+// createPageWithRetry attempts to create a new page with retry logic
+func (c *Crawler) createPageWithRetry(context playwright.BrowserContext, maxRetries int) (playwright.Page, error) {
+	var page playwright.Page
+	var err error
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		page, err = context.NewPage()
+		if err == nil {
+			c.log.Info("✅ New tab created", zap.Int("attempt", attempt))
+			return page, nil
+		}
+
+		c.log.Warn("Failed to create page",
+			zap.Int("attempt", attempt),
+			zap.Int("max_retries", maxRetries),
+			zap.Error(err),
+		)
+
+		if attempt < maxRetries {
+			time.Sleep(2 * time.Second)
+		}
+	}
+
+	return nil, fmt.Errorf("failed to create page after %d attempts: %w", maxRetries, err)
+}
+
+// crawlKeyword crawls a single keyword with its dedicated page
+func (c *Crawler) crawlKeyword(page playwright.Page, keyword string) {
+	c.log.Info("🔍 Crawling keyword", zap.String("keyword", keyword))
+
+	videosByKeyword := make(map[string][]map[string]any)
+	var mu sync.Mutex
+	currentKeyword := keyword
+
+	// Setup response interceptor for this page
+	page.On("response", func(res playwright.Response) {
+		if !containsAny(res.URL(), []string{searchAPI}) {
+			return
+		}
+
+		go func(res playwright.Response, kw string) {
+			c.log.Debug("API response intercepted",
+				zap.String("keyword", kw),
+				zap.String("url", res.URL()),
+			)
+
+			var body map[string]any
+			if err := res.JSON(&body); err != nil || body == nil {
+				c.log.Warn("Failed to parse API response body", zap.String("keyword", kw), zap.Error(err))
+				return
+			}
+			if statusCode, ok := body["status_code"].(float64); !ok || statusCode != 0 {
+				c.log.Warn("API returned non-zero status",
+					zap.String("keyword", kw),
+					zap.Any("status_code", body["status_code"]),
+				)
+				return
+			}
+			items, _ := body["item_list"].([]any)
+			c.log.Info("API batch received",
+				zap.String("keyword", kw),
+				zap.Int("items_in_batch", len(items)),
+			)
+
+			mu.Lock()
+			defer mu.Unlock()
+			seen := make(map[string]bool)
+			for _, existing := range videosByKeyword[kw] {
+				if id, ok := existing["id"].(string); ok {
+					seen[id] = true
+				}
+			}
+			newCount := 0
+			for _, raw := range items {
+				item, ok := raw.(map[string]any)
+				if !ok {
+					continue
+				}
+				id, _ := item["id"].(string)
+				if id == "" || seen[id] {
+					continue
+				}
+				seen[id] = true
+				videosByKeyword[kw] = append(videosByKeyword[kw], item)
+				newCount++
+			}
+			c.log.Info("New videos added to buffer",
+				zap.String("keyword", kw),
+				zap.Int("new", newCount),
+				zap.Int("total_buffered", len(videosByKeyword[kw])),
+			)
+		}(res, keyword)
+	})
+
+	// Navigate to TikTok home first
+	if _, err := page.Goto(tiktokURL, playwright.PageGotoOptions{
+		WaitUntil: playwright.WaitUntilStateDomcontentloaded,
+		Timeout:   playwright.Float(30000),
+	}); err != nil {
+		c.log.Warn("Failed to load TikTok home", zap.String("keyword", keyword), zap.Error(err))
+		return
+	}
+	utils.Sleep(4000, 7000)
+	_ = utils.RandomMouseMove(page)
+	utils.Sleep(500, 1500)
+
+	// Navigate to search page
+	encoded := url.QueryEscape(keyword)
+	ts := time.Now().UnixMilli()
+	searchURL := fmt.Sprintf("%s/search/video?q=%s&t=%d", tiktokURL, encoded, ts)
+
+	if _, err := page.Goto(searchURL, playwright.PageGotoOptions{
+		WaitUntil: playwright.WaitUntilStateDomcontentloaded,
+		Timeout:   playwright.Float(30000),
+	}); err != nil {
+		c.log.Warn("Failed to navigate to search", zap.String("keyword", keyword), zap.Error(err))
+		return
+	}
+	utils.Sleep(6000, 9000)
+
+	// Scroll and interact
+	scrollTimes := utils.RandInt(1, 4)
+	_ = utils.HumanScroll(page, scrollTimes)
+	_ = utils.RandomViewVideo(page)
+
+	utils.Sleep(1500, 2500)
+
+	// Get collected videos
+	mu.Lock()
+	items := videosByKeyword[keyword]
+	mu.Unlock()
+
+	c.log.Info("Videos collected", zap.String("keyword", keyword), zap.Int("count", len(items)))
+
+	// Parse and save results
+	results := c.parseVideos(keyword, items)
+	if len(results) > 0 {
+		c.saveToFile(keyword, results)
+	}
 }
 
 func (c *Crawler) parseVideos(keyword string, items []map[string]any) []models.VideoItem {
