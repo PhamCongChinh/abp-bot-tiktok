@@ -8,7 +8,6 @@ import (
 	"abp-bot-tiktok/pkg/api"
 	"abp-bot-tiktok/pkg/config"
 	"abp-bot-tiktok/pkg/gpm"
-	"encoding/json"
 	"fmt"
 	"net/url"
 	"sync"
@@ -131,7 +130,9 @@ func (c *Crawler) connectGPMWithRetry(pw *playwright.Playwright, gpmClient *gpm.
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		browser, context, err = c.connectGPM(pw, gpmClient, profileID, log)
 		if err == nil {
-			log.Info("✅ Connected to GPM successfully", zap.Int("attempt", attempt))
+			if attempt > 1 {
+				log.Info("Connected to GPM successfully", zap.Int("attempt", attempt))
+			}
 			return browser, context, nil
 		}
 
@@ -148,7 +149,6 @@ func (c *Crawler) connectGPMWithRetry(pw *playwright.Playwright, gpmClient *gpm.
 			}
 			gpmClient.StopProfile(profileID)
 			
-			log.Info("Waiting before retry...", zap.Int("seconds", 5))
 			time.Sleep(5 * time.Second)
 		}
 	}
@@ -192,7 +192,6 @@ func (c *Crawler) connectGPM(pw *playwright.Playwright, gpmClient *gpm.Client, p
 		return nil, nil, err
 	}
 
-	log.Info("Connecting to GPM via CDP", zap.String("ws_url", wsURL))
 	browser, err := pw.Chromium.ConnectOverCDP(wsURL)
 	if err != nil {
 		gpmClient.StopProfile(profileID)
@@ -206,7 +205,6 @@ func (c *Crawler) connectGPM(pw *playwright.Playwright, gpmClient *gpm.Client, p
 		return nil, nil, fmt.Errorf("no browser context found from GPM")
 	}
 
-	log.Info("Connected to GPM profile successfully", zap.Int("contexts", len(contexts)))
 	return browser, contexts[0], nil
 }
 
@@ -221,7 +219,7 @@ func (c *Crawler) crawlSearch(context playwright.BrowserContext, keywords []stri
 	for i < total {
 		batchSize := utils.RandInt(c.cfg.BatchMin, c.cfg.BatchMax)
 		batch := keywords[i:min(i+batchSize, total)]
-		c.log.Info("New session", zap.Int("keywords", len(batch)))
+		c.log.Info("New session started", zap.Int("keywords", len(batch)))
 
 		// Process each keyword with its own tab
 		for _, keyword := range batch {
@@ -238,25 +236,23 @@ func (c *Crawler) crawlSearch(context playwright.BrowserContext, keywords []stri
 			// Close page immediately after crawling
 			if err := page.Close(); err != nil {
 				c.log.Warn("Failed to close page", zap.String("keyword", keyword), zap.Error(err))
-			} else {
-				c.log.Info("✅ Tab closed", zap.String("keyword", keyword))
 			}
 
 			// Sleep between keywords
 			sleepSec := utils.RandInt(c.cfg.SleepMinKeyword, c.cfg.SleepMaxKeyword)
-			c.log.Info("Waiting before next keyword", zap.Int("seconds", sleepSec))
+			c.log.Info("Sleeping before next keyword", zap.Int("seconds", sleepSec))
 			time.Sleep(time.Duration(sleepSec) * time.Second)
 		}
 
 		// Rest between sessions
 		restSec := utils.RandInt(c.cfg.RestMinSession, c.cfg.RestMaxSession)
-		c.log.Info("Resting before next session", zap.Int("seconds", restSec))
+		c.log.Info("Session completed, resting", zap.Int("seconds", restSec))
 		time.Sleep(time.Duration(restSec) * time.Second)
 
 		i += batchSize
 	}
 
-	c.log.Info("Done crawling all keywords")
+	c.log.Info("All keywords crawled")
 }
 
 // createPageWithRetry attempts to create a new page with retry logic
@@ -267,7 +263,6 @@ func (c *Crawler) createPageWithRetry(context playwright.BrowserContext, maxRetr
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		page, err = context.NewPage()
 		if err == nil {
-			c.log.Info("✅ New tab created", zap.Int("attempt", attempt))
 			return page, nil
 		}
 
@@ -299,28 +294,14 @@ func (c *Crawler) crawlKeyword(page playwright.Page, keyword string) {
 		}
 
 		go func(res playwright.Response, kw string) {
-			c.log.Debug("API response intercepted",
-				zap.String("keyword", kw),
-				zap.String("url", res.URL()),
-			)
-
 			var body map[string]any
 			if err := res.JSON(&body); err != nil || body == nil {
-				c.log.Warn("Failed to parse API response body", zap.String("keyword", kw), zap.Error(err))
 				return
 			}
 			if statusCode, ok := body["status_code"].(float64); !ok || statusCode != 0 {
-				c.log.Warn("API returned non-zero status",
-					zap.String("keyword", kw),
-					zap.Any("status_code", body["status_code"]),
-				)
 				return
 			}
 			items, _ := body["item_list"].([]any)
-			c.log.Info("API batch received",
-				zap.String("keyword", kw),
-				zap.Int("items_in_batch", len(items)),
-			)
 
 			mu.Lock()
 			defer mu.Unlock()
@@ -344,11 +325,9 @@ func (c *Crawler) crawlKeyword(page playwright.Page, keyword string) {
 				videosByKeyword[kw] = append(videosByKeyword[kw], item)
 				newCount++
 			}
-			c.log.Info("New videos added to buffer",
-				zap.String("keyword", kw),
-				zap.Int("new", newCount),
-				zap.Int("total_buffered", len(videosByKeyword[kw])),
-			)
+			if newCount > 0 {
+				c.log.Info("Videos received", zap.String("keyword", kw), zap.Int("new", newCount))
+			}
 		}(res, keyword)
 	})
 
@@ -429,27 +408,22 @@ func (c *Crawler) parseVideos(keyword string, items []map[string]any) []models.V
 			Views:       int64(toFloat(mapGet(stats, "playCount"))),
 		}
 
-		c.log.Info("📹 Video parsed",
-			zap.String("keyword", keyword),
-			zap.String("video_id", v.VideoID),
-			zap.String("author", v.AuthName),
-			zap.String("unique_id", "@"+v.UniqueID),
-			zap.String("desc", truncate(v.Description, 80)),
-			zap.Int64("views", v.Views),
-			zap.Int64("likes", v.Reactions),
-			zap.Int64("comments", v.Comments),
-			zap.Int64("shares", v.Shares),
-			zap.String("pub_time", time.Unix(v.PubTime, 0).Format("2006-01-02 15:04:05")),
-		)
-
 		results = append(results, v)
 	}
 
-	c.log.Info("Parse summary",
-		zap.String("keyword", keyword),
-		zap.Int("parsed", len(results)),
-		zap.Int("skipped_old", skipped),
-	)
+	if skipped > 0 {
+		c.log.Info("Videos parsed",
+			zap.String("keyword", keyword),
+			zap.Int("valid", len(results)),
+			zap.Int("skipped_old", skipped),
+		)
+	} else {
+		c.log.Info("Videos parsed",
+			zap.String("keyword", keyword),
+			zap.Int("count", len(results)),
+		)
+	}
+	
 	return results
 }
 
@@ -459,8 +433,6 @@ func (c *Crawler) saveToFile(keyword string, videos []models.VideoItem) {
 	for _, v := range videos {
 		post := parser.FromVideoItem(v)
 		posts = append(posts, post)
-		b, _ := json.Marshal(post)
-		c.log.Info("📄 Post parsed", zap.String("keyword", keyword), zap.String("json", string(b)))
 	}
 
 	// Post to API (unclassified)
@@ -468,6 +440,11 @@ func (c *Crawler) saveToFile(keyword string, videos []models.VideoItem) {
 		c.log.Error("Failed to post to API", zap.String("keyword", keyword), zap.Error(err))
 		return
 	}
+	
+	c.log.Info("✅ Posted to API", 
+		zap.String("keyword", keyword), 
+		zap.Int("count", len(posts)),
+	)
 }
 
 func truncate(s string, n int) string {

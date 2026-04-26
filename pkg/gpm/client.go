@@ -33,7 +33,6 @@ func NewClient(apiURL string, log *zap.Logger) *Client {
 
 func (c *Client) StartProfile(profileID string) (string, error) {
 	url := fmt.Sprintf("%s/profiles/start/%s", c.apiURL, profileID)
-	c.log.Info("Starting GPM profile", zap.String("url", url))
 
 	resp, err := c.client.Get(url)
 	if err != nil {
@@ -47,9 +46,6 @@ func (c *Client) StartProfile(profileID string) (string, error) {
 		return "", fmt.Errorf("GPM API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
-	// Log raw response for debugging
-	c.log.Info("GPM API response", zap.String("body", string(body)))
-
 	var result StartProfileResponse
 	if err := json.Unmarshal(body, &result); err != nil {
 		return "", fmt.Errorf("failed to decode response: %w", err)
@@ -57,7 +53,6 @@ func (c *Client) StartProfile(profileID string) (string, error) {
 
 	debugAddr := result.Data.RemoteDebuggingAddress
 	if debugAddr == "" {
-		c.log.Warn("remote_debugging_address is empty")
 		return "", fmt.Errorf("empty remote_debugging_address in response")
 	}
 
@@ -67,7 +62,7 @@ func (c *Client) StartProfile(profileID string) (string, error) {
 		return "", fmt.Errorf("failed to get WebSocket URL: %w", err)
 	}
 
-	c.log.Info("GPM profile started", zap.String("debug_addr", debugAddr), zap.String("ws_url", wsURL))
+	c.log.Info("GPM profile started", zap.String("profile_id", profileID))
 	return wsURL, nil
 }
 
@@ -79,15 +74,11 @@ func (c *Client) getWebSocketURL(debugAddr string) (string, error) {
 	maxRetries := 5
 	for i := 0; i < maxRetries; i++ {
 		if i > 0 {
-			c.log.Info("Retrying CDP connection", zap.Int("attempt", i+1), zap.Int("max", maxRetries))
 			time.Sleep(2 * time.Second)
 		} else {
 			// First attempt: wait 2 seconds for browser to start
-			c.log.Info("Waiting for GPM browser to start...")
 			time.Sleep(2 * time.Second)
 		}
-
-		c.log.Info("Querying CDP endpoint", zap.String("url", url), zap.Int("attempt", i+1))
 
 		resp, err := c.client.Get(url)
 		if err != nil {
@@ -108,7 +99,6 @@ func (c *Client) getWebSocketURL(debugAddr string) (string, error) {
 			return "", fmt.Errorf("webSocketDebuggerUrl not found in CDP response")
 		}
 
-		c.log.Info("Got WebSocket URL from CDP", zap.String("ws_url", wsURL))
 		return wsURL, nil
 	}
 
@@ -117,7 +107,6 @@ func (c *Client) getWebSocketURL(debugAddr string) (string, error) {
 
 func (c *Client) StopProfile(profileID string) error {
 	url := fmt.Sprintf("%s/profiles/close/%s", c.apiURL, profileID)
-	c.log.Info("Stopping GPM profile", zap.String("url", url))
 
 	resp, err := c.client.Get(url)
 	if err != nil {
@@ -136,6 +125,6 @@ func (c *Client) StopProfile(profileID string) error {
 		return fmt.Errorf("GPM stop returned status %d", resp.StatusCode)
 	}
 
-	c.log.Info("✅ GPM profile stopped successfully")
+	c.log.Info("GPM profile stopped", zap.String("profile_id", profileID))
 	return nil
 }
