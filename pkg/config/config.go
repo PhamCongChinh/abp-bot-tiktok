@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strings"
 
 	"github.com/joho/godotenv"
 )
@@ -61,10 +62,10 @@ func Load() *Config {
 		UseGPM:          gpmAPI != "" && len(profileIDs) > 0,
 		BatchMin:        getEnvInt("BATCH_MIN", 5),
 		BatchMax:        getEnvInt("BATCH_MAX", 10),
-		SleepMinKeyword: getEnvInt("SLEEP_MIN_KEYWORD", 180),  // 3 minutes
-		SleepMaxKeyword: getEnvInt("SLEEP_MAX_KEYWORD", 240),  // 4 minutes
-		RestMinSession:  getEnvInt("REST_MIN_SESSION", 300),   // 5 minutes
-		RestMaxSession:  getEnvInt("REST_MAX_SESSION", 600),   // 10 minutes
+		SleepMinKeyword: getEnvInt("SLEEP_MIN_KEYWORD", 180), // 3 minutes
+		SleepMaxKeyword: getEnvInt("SLEEP_MAX_KEYWORD", 240), // 4 minutes
+		RestMinSession:  getEnvInt("REST_MIN_SESSION", 300),  // 5 minutes
+		RestMaxSession:  getEnvInt("REST_MAX_SESSION", 600),  // 10 minutes
 	}
 }
 
@@ -114,12 +115,12 @@ func parseIntSlice(s string, fallback []int) []int {
 	if s == "" {
 		return fallback
 	}
-	
+
 	var result []int
 	start := 0
 	for i := 0; i <= len(s); i++ {
 		if i == len(s) || s[i] == ',' {
-			part := s[start:i]
+			part := strings.TrimSpace(s[start:i])
 			if part != "" {
 				n := 0
 				valid := true
@@ -130,14 +131,14 @@ func parseIntSlice(s string, fallback []int) []int {
 					}
 					n = n*10 + int(c-'0')
 				}
-				if valid {
+				if valid && n > 0 {
 					result = append(result, n)
 				}
 			}
 			start = i + 1
 		}
 	}
-	
+
 	if len(result) == 0 {
 		return fallback
 	}
