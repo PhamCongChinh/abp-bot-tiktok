@@ -45,7 +45,9 @@ func New(cfg *config.Config, log *zap.Logger, videoRepo *repository.VideoReposit
 }
 
 func (c *Crawler) Run() {
+	c.log.Info("========================================")
 	c.log.Info("Crawl cycle started")
+	c.log.Info("========================================")
 
 	if !c.cfg.UseGPM {
 		c.log.Error("GPM config required. Set GPM_API and PROFILE_IDS in .env")
@@ -53,20 +55,26 @@ func (c *Crawler) Run() {
 	}
 
 	numProfiles := len(c.cfg.ProfileIDs)
-	c.log.Info("Running with profiles",
-		zap.Int("profiles", numProfiles),
+	c.log.Info("Configuration",
+		zap.Int("total_profiles", numProfiles),
 		zap.Int("total_keywords", len(c.cfg.Keywords)),
 	)
 
 	// Split keywords evenly across profiles
 	chunks := splitKeywords(c.cfg.Keywords, numProfiles)
+	
+	c.log.Info("========================================")
+	c.log.Info("Keyword distribution across profiles:")
+	c.log.Info("========================================")
 	for i, chunk := range chunks {
-		c.log.Info("Keyword chunk assigned",
-			zap.Int("profile_index", i),
+		c.log.Info("",
 			zap.String("profile_id", c.cfg.ProfileIDs[i]),
-			zap.Int("keywords", len(chunk)),
+			zap.Int("profile_index", i+1),
+			zap.Int("keywords_count", len(chunk)),
+			zap.Strings("keywords", chunk),
 		)
 	}
+	c.log.Info("========================================")
 
 	// Run each profile in parallel goroutine
 	var wg sync.WaitGroup
@@ -79,7 +87,9 @@ func (c *Crawler) Run() {
 	}
 
 	wg.Wait()
+	c.log.Info("========================================")
 	c.log.Info("Crawl cycle finished")
+	c.log.Info("========================================")
 }
 
 func splitKeywords(keywords []string, n int) [][]string {
@@ -91,8 +101,14 @@ func splitKeywords(keywords []string, n int) [][]string {
 }
 
 func (c *Crawler) runProfile(profileID string, keywords []string, idx int) {
-	log := c.log.With(zap.Int("profile_index", idx), zap.String("profile_id", profileID))
-	log.Info("Profile starting", zap.Int("keywords", len(keywords)))
+	log := c.log.With(
+		zap.String("profile_id", profileID),
+		zap.Int("profile_index", idx+1),
+	)
+	
+	log.Info("========================================")
+	log.Info("Profile starting", zap.Int("keywords_count", len(keywords)))
+	log.Info("========================================")
 
 	pw, err := playwright.Run()
 	if err != nil {
@@ -118,7 +134,10 @@ func (c *Crawler) runProfile(profileID string, keywords []string, idx int) {
 
 	// Monitor browser connection and crawl
 	c.crawlSearchWithMonitoring(browser, context, keywords, pw, gpmClient, profileID, log)
+	
+	log.Info("========================================")
 	log.Info("Profile finished")
+	log.Info("========================================")
 }
 
 // connectGPMWithRetry attempts to connect to GPM with retry logic
@@ -219,10 +238,22 @@ func (c *Crawler) crawlSearch(context playwright.BrowserContext, keywords []stri
 	for i < total {
 		batchSize := utils.RandInt(c.cfg.BatchMin, c.cfg.BatchMax)
 		batch := keywords[i:min(i+batchSize, total)]
-		c.log.Info("New session started", zap.Int("keywords", len(batch)))
+		
+		c.log.Info("----------------------------------------")
+		c.log.Info("New session started", 
+			zap.Int("batch_size", len(batch)),
+			zap.Strings("keywords", batch),
+		)
+		c.log.Info("----------------------------------------")
 
 		// Process each keyword with its own tab
-		for _, keyword := range batch {
+		for keywordIdx, keyword := range batch {
+			c.log.Info(">>> Processing keyword",
+				zap.Int("keyword_number", keywordIdx+1),
+				zap.Int("total_in_batch", len(batch)),
+				zap.String("keyword", keyword),
+			)
+			
 			// Create new page for each keyword
 			page, err := c.createPageWithRetry(context, 3)
 			if err != nil {
@@ -238,21 +269,33 @@ func (c *Crawler) crawlSearch(context playwright.BrowserContext, keywords []stri
 				c.log.Warn("Failed to close page", zap.String("keyword", keyword), zap.Error(err))
 			}
 
-			// Sleep between keywords
-			sleepSec := utils.RandInt(c.cfg.SleepMinKeyword, c.cfg.SleepMaxKeyword)
-			c.log.Info("Sleeping before next keyword", zap.Int("seconds", sleepSec))
-			time.Sleep(time.Duration(sleepSec) * time.Second)
+			// Sleep between keywords (except last one in batch)
+			if keywordIdx < len(batch)-1 {
+				sleepSec := utils.RandInt(c.cfg.SleepMinKeyword, c.cfg.SleepMaxKeyword)
+				c.log.Info("⏳ Sleeping before next keyword", 
+					zap.Int("seconds", sleepSec),
+					zap.String("next_keyword", batch[keywordIdx+1]),
+				)
+				time.Sleep(time.Duration(sleepSec) * time.Second)
+			}
 		}
 
 		// Rest between sessions
-		restSec := utils.RandInt(c.cfg.RestMinSession, c.cfg.RestMaxSession)
-		c.log.Info("Session completed, resting", zap.Int("seconds", restSec))
-		time.Sleep(time.Duration(restSec) * time.Second)
-
 		i += batchSize
+		if i < total {
+			restSec := utils.RandInt(c.cfg.RestMinSession, c.cfg.RestMaxSession)
+			c.log.Info("----------------------------------------")
+			c.log.Info("Session completed, resting before next session", 
+				zap.Int("seconds", restSec),
+				zap.Int("keywords_completed", i),
+				zap.Int("keywords_remaining", total-i),
+			)
+			c.log.Info("----------------------------------------")
+			time.Sleep(time.Duration(restSec) * time.Second)
+		}
 	}
 
-	c.log.Info("All keywords crawled")
+	c.log.Info("✅ All keywords crawled for this profile")
 }
 
 // createPageWithRetry attempts to create a new page with retry logic
@@ -282,8 +325,6 @@ func (c *Crawler) createPageWithRetry(context playwright.BrowserContext, maxRetr
 
 // crawlKeyword crawls a single keyword with its dedicated page
 func (c *Crawler) crawlKeyword(page playwright.Page, keyword string) {
-	c.log.Info("🔍 Crawling keyword", zap.String("keyword", keyword))
-
 	videosByKeyword := make(map[string][]map[string]any)
 	var mu sync.Mutex
 
@@ -326,7 +367,11 @@ func (c *Crawler) crawlKeyword(page playwright.Page, keyword string) {
 				newCount++
 			}
 			if newCount > 0 {
-				c.log.Info("Videos received", zap.String("keyword", kw), zap.Int("new", newCount))
+				c.log.Info("   📥 Videos received", 
+					zap.String("keyword", kw), 
+					zap.Int("new", newCount),
+					zap.Int("total", len(videosByKeyword[kw])),
+				)
 			}
 		}(res, keyword)
 	})
@@ -369,7 +414,10 @@ func (c *Crawler) crawlKeyword(page playwright.Page, keyword string) {
 	items := videosByKeyword[keyword]
 	mu.Unlock()
 
-	c.log.Info("Videos collected", zap.String("keyword", keyword), zap.Int("count", len(items)))
+	c.log.Info("   ✅ Keyword completed", 
+		zap.String("keyword", keyword), 
+		zap.Int("videos_collected", len(items)),
+	)
 
 	// Parse and save results
 	results := c.parseVideos(keyword, items)
@@ -412,15 +460,10 @@ func (c *Crawler) parseVideos(keyword string, items []map[string]any) []models.V
 	}
 
 	if skipped > 0 {
-		c.log.Info("Videos parsed",
+		c.log.Info("   📊 Videos parsed",
 			zap.String("keyword", keyword),
 			zap.Int("valid", len(results)),
 			zap.Int("skipped_old", skipped),
-		)
-	} else {
-		c.log.Info("Videos parsed",
-			zap.String("keyword", keyword),
-			zap.Int("count", len(results)),
 		)
 	}
 	
@@ -437,11 +480,11 @@ func (c *Crawler) saveToFile(keyword string, videos []models.VideoItem) {
 
 	// Post to API (unclassified)
 	if err := c.apiClient.PostUnclassified(posts); err != nil {
-		c.log.Error("Failed to post to API", zap.String("keyword", keyword), zap.Error(err))
+		c.log.Error("   ❌ Failed to post to API", zap.String("keyword", keyword), zap.Error(err))
 		return
 	}
 	
-	c.log.Info("✅ Posted to API", 
+	c.log.Info("   ✅ Posted to API", 
 		zap.String("keyword", keyword), 
 		zap.Int("count", len(posts)),
 	)

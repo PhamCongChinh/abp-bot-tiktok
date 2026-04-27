@@ -7,11 +7,10 @@ import (
 )
 
 type Config struct {
-	LogLevel     string
-	CronSchedule string
-	OutputDir    string
-	Debug        bool
-	BotName      string
+	LogLevel  string
+	OutputDir string
+	Debug     bool
+	BotName   string
 	// MongoDB
 	MongoURI string
 	MongoDB  string
@@ -50,7 +49,6 @@ func Load() *Config {
 
 	return &Config{
 		LogLevel:        getEnv("LOG_LEVEL", "info"),
-		CronSchedule:    getEnv("CRON_SCHEDULE", "0 */6 * * *"),
 		OutputDir:       getEnv("OUTPUT_DIR", "./data"),
 		Debug:           getEnv("DEBUG", "true") == "true",
 		BotName:         getEnv("BOT_NAME", "bot-test"),
