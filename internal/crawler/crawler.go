@@ -227,10 +227,6 @@ func (c *Crawler) connectGPM(pw *playwright.Playwright, gpmClient *gpm.Client, p
 	return browser, contexts[0], nil
 }
 
-func (c *Crawler) SetKeywords(keywords []string) {
-	c.cfg.Keywords = keywords
-}
-
 func (c *Crawler) crawlSearch(context playwright.BrowserContext, keywords []string) {
 	total := len(keywords)
 	i := 0

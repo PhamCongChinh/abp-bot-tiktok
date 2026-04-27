@@ -25,27 +25,44 @@ func New(cfg *config.Config, log *zap.Logger, c *crawler.Crawler) *Scheduler {
 }
 
 func (s *Scheduler) Start() {
-	s.log.Info("Scheduler started with interval mode", zap.String("interval", "90 minutes"))
+	// Interval between crawl cycles (1-1.5 hours)
+	intervalMin := 60  // 1 hour
+	intervalMax := 90  // 1.5 hours
+	
+	s.log.Info("Scheduler started with interval mode", 
+		zap.Int("interval_min_minutes", intervalMin),
+		zap.Int("interval_max_minutes", intervalMax),
+	)
 
 	// Run immediately on startup
 	s.log.Info("Running initial crawl on startup...")
 	s.crawler.Run()
 
 	// Start interval loop
-	go s.runInterval()
+	go s.runInterval(intervalMin, intervalMax)
 }
 
-func (s *Scheduler) runInterval() {
-	ticker := time.NewTicker(90 * time.Minute)
-	defer ticker.Stop()
-
+func (s *Scheduler) runInterval(minMinutes, maxMinutes int) {
 	for {
+		// Random interval between min and max
+		intervalMinutes := minMinutes + int(time.Now().UnixNano()%int64(maxMinutes-minMinutes+1))
+		interval := time.Duration(intervalMinutes) * time.Minute
+		
+		s.log.Info("Waiting for next crawl cycle", 
+			zap.Int("minutes", intervalMinutes),
+			zap.String("next_run_at", time.Now().Add(interval).Format("2006-01-02 15:04:05")),
+		)
+		
+		timer := time.NewTimer(interval)
+		
 		select {
-		case <-ticker.C:
+		case <-timer.C:
+			s.log.Info("========================================")
 			s.log.Info("Interval triggered - starting new crawl cycle")
+			s.log.Info("========================================")
 			s.crawler.Run()
-			s.log.Info("Crawl cycle completed - waiting 90 minutes for next cycle")
 		case <-s.stopCh:
+			timer.Stop()
 			s.log.Info("Scheduler stopped")
 			return
 		}

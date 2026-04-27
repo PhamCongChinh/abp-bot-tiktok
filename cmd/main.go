@@ -46,14 +46,17 @@ func main() {
 		zap.Ints("org_ids", cfg.OrgIDs),
 	)
 
-	// Build keyword list
+	// Build keyword list and group by org_id
+	orgKeywordCount := make(map[int]int)
 	var keywordList []string
 	for _, kw := range keywords {
 		keywordList = append(keywordList, kw.Keyword)
-		log.Info("Keyword loaded", 
-			zap.String("keyword", kw.Keyword),
-			zap.Int("org_id", kw.OrgID),
-		)
+		orgKeywordCount[kw.OrgID]++
+	}
+
+	log.Info("Keywords distribution by organization:")
+	for orgID, count := range orgKeywordCount {
+		log.Info("", zap.Int("org_id", orgID), zap.Int("keywords", count))
 	}
 
 	if len(keywordList) == 0 {
@@ -61,11 +64,14 @@ func main() {
 		return
 	}
 
-	// Set keywords to config
+	// Set keywords to config (will be reused for all crawl cycles)
 	cfg.Keywords = keywordList
 
-	// Init crawler (without MongoDB video insert, only save to JSON)
+	// Init crawler
 	c := crawler.New(cfg, log, nil)
+	
+	log.Info("Crawler initialized - will crawl same keywords every 1-1.5 hours")
+	
 	runCrawler(cfg, log, c)
 }
 
