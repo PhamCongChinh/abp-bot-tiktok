@@ -62,7 +62,7 @@ func (c *Crawler) Run() {
 
 	// Split keywords evenly across profiles
 	chunks := splitKeywords(c.cfg.Keywords, numProfiles)
-	
+
 	c.log.Info("========================================")
 	c.log.Info("Keyword distribution across profiles:")
 	c.log.Info("========================================")
@@ -105,7 +105,7 @@ func (c *Crawler) runProfile(profileID string, keywords []string, idx int) {
 		zap.String("profile_id", profileID),
 		zap.Int("profile_index", idx+1),
 	)
-	
+
 	log.Info("========================================")
 	log.Info("Profile starting", zap.Int("keywords_count", len(keywords)))
 	log.Info("========================================")
@@ -134,7 +134,7 @@ func (c *Crawler) runProfile(profileID string, keywords []string, idx int) {
 
 	// Monitor browser connection and crawl
 	c.crawlSearchWithMonitoring(browser, context, keywords, pw, gpmClient, profileID, log)
-	
+
 	log.Info("========================================")
 	log.Info("Profile finished")
 	log.Info("========================================")
@@ -167,7 +167,7 @@ func (c *Crawler) connectGPMWithRetry(pw *playwright.Playwright, gpmClient *gpm.
 				browser.Close()
 			}
 			gpmClient.StopProfile(profileID)
-			
+
 			time.Sleep(5 * time.Second)
 		}
 	}
@@ -183,13 +183,23 @@ func (c *Crawler) crawlSearchWithMonitoring(browser playwright.Browser, context 
 		}
 	}()
 
-	// Check if browser is still connected before crawling
-	if !c.isBrowserConnected(browser, log) {
-		log.Error("Browser disconnected before crawling started")
+	for {
+		// Check if browser is still connected
+		if !c.isBrowserConnected(browser, log) {
+			log.Warn("Browser disconnected, attempting to reconnect...")
+			newBrowser, newContext, err := c.connectGPMWithRetry(pw, gpmClient, profileID, log, 3)
+			if err != nil {
+				log.Error("Failed to reconnect GPM", zap.Error(err))
+				return
+			}
+			browser = newBrowser
+			context = newContext
+			log.Info("Reconnected to GPM successfully")
+		}
+
+		c.crawlSearch(context, keywords)
 		return
 	}
-
-	c.crawlSearch(context, keywords)
 }
 
 // isBrowserConnected checks if browser connection is still alive
@@ -234,9 +244,9 @@ func (c *Crawler) crawlSearch(context playwright.BrowserContext, keywords []stri
 	for i < total {
 		batchSize := utils.RandInt(c.cfg.BatchMin, c.cfg.BatchMax)
 		batch := keywords[i:min(i+batchSize, total)]
-		
+
 		c.log.Info("----------------------------------------")
-		c.log.Info("New session started", 
+		c.log.Info("New session started",
 			zap.Int("batch_size", len(batch)),
 			zap.Strings("keywords", batch),
 		)
@@ -249,7 +259,7 @@ func (c *Crawler) crawlSearch(context playwright.BrowserContext, keywords []stri
 				zap.Int("total_in_batch", len(batch)),
 				zap.String("keyword", keyword),
 			)
-			
+
 			// Create new page for each keyword
 			page, err := c.createPageWithRetry(context, 3)
 			if err != nil {
@@ -268,7 +278,7 @@ func (c *Crawler) crawlSearch(context playwright.BrowserContext, keywords []stri
 			// Sleep between keywords (except last one in batch)
 			if keywordIdx < len(batch)-1 {
 				sleepSec := utils.RandInt(c.cfg.SleepMinKeyword, c.cfg.SleepMaxKeyword)
-				c.log.Info("⏳ Sleeping before next keyword", 
+				c.log.Info("⏳ Sleeping before next keyword",
 					zap.Int("seconds", sleepSec),
 					zap.String("next_keyword", batch[keywordIdx+1]),
 				)
@@ -281,7 +291,7 @@ func (c *Crawler) crawlSearch(context playwright.BrowserContext, keywords []stri
 		if i < total {
 			restSec := utils.RandInt(c.cfg.RestMinSession, c.cfg.RestMaxSession)
 			c.log.Info("----------------------------------------")
-			c.log.Info("Session completed, resting before next session", 
+			c.log.Info("Session completed, resting before next session",
 				zap.Int("seconds", restSec),
 				zap.Int("keywords_completed", i),
 				zap.Int("keywords_remaining", total-i),
@@ -303,6 +313,11 @@ func (c *Crawler) createPageWithRetry(context playwright.BrowserContext, maxRetr
 		page, err = context.NewPage()
 		if err == nil {
 			return page, nil
+		}
+
+		// If target closed, no point retrying - browser is gone
+		if containsAny(err.Error(), []string{"target closed", "Target page", "browser has been closed"}) {
+			return nil, fmt.Errorf("browser context closed, cannot create page: %w", err)
 		}
 
 		c.log.Warn("Failed to create page",
@@ -363,8 +378,8 @@ func (c *Crawler) crawlKeyword(page playwright.Page, keyword string) {
 				newCount++
 			}
 			if newCount > 0 {
-				c.log.Info("   📥 Videos received", 
-					zap.String("keyword", kw), 
+				c.log.Info("   📥 Videos received",
+					zap.String("keyword", kw),
 					zap.Int("new", newCount),
 					zap.Int("total", len(videosByKeyword[kw])),
 				)
@@ -410,8 +425,8 @@ func (c *Crawler) crawlKeyword(page playwright.Page, keyword string) {
 	items := videosByKeyword[keyword]
 	mu.Unlock()
 
-	c.log.Info("   ✅ Keyword completed", 
-		zap.String("keyword", keyword), 
+	c.log.Info("   ✅ Keyword completed",
+		zap.String("keyword", keyword),
 		zap.Int("videos_collected", len(items)),
 	)
 
@@ -462,7 +477,7 @@ func (c *Crawler) parseVideos(keyword string, items []map[string]any) []models.V
 			zap.Int("skipped_old", skipped),
 		)
 	}
-	
+
 	return results
 }
 
@@ -479,9 +494,9 @@ func (c *Crawler) saveToFile(keyword string, videos []models.VideoItem) {
 		c.log.Error("   ❌ Failed to post to API", zap.String("keyword", keyword), zap.Error(err))
 		return
 	}
-	
-	c.log.Info("   ✅ Posted to API", 
-		zap.String("keyword", keyword), 
+
+	c.log.Info("   ✅ Posted to API",
+		zap.String("keyword", keyword),
 		zap.Int("count", len(posts)),
 	)
 }
