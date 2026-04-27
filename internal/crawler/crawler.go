@@ -35,12 +35,7 @@ func New(cfg *config.Config, log *zap.Logger, videoRepo *repository.VideoReposit
 	if cfg.APIURL != "" {
 		apiClient = api.NewClient(cfg.APIURL, log)
 	}
-	return &Crawler{
-		cfg:       cfg,
-		log:       log,
-		videoRepo: videoRepo,
-		apiClient: apiClient,
-	}
+	return &Crawler{cfg: cfg, log: log, videoRepo: videoRepo, apiClient: apiClient}
 }
 
 func (c *Crawler) SetKeywords(keywords []string) {
@@ -56,9 +51,9 @@ func (c *Crawler) Run() {
 	numProfiles := len(c.cfg.ProfileIDs)
 	chunks := splitKeywords(c.cfg.Keywords, numProfiles)
 
-	c.log.Sugar().Infof("🚀 Crawl started | %d profiles | %d keywords total", numProfiles, len(c.cfg.Keywords))
+	c.log.Sugar().Infof("Crawl started | %d profiles | %d keywords total", numProfiles, len(c.cfg.Keywords))
 	for i, chunk := range chunks {
-		c.log.Sugar().Infof("   [P%d|%s...] → %d keywords", i+1, c.cfg.ProfileIDs[i][:8], len(chunk))
+		c.log.Sugar().Infof("  [P%d|%s...] %d keywords", i+1, c.cfg.ProfileIDs[i][:8], len(chunk))
 	}
 
 	var wg sync.WaitGroup
@@ -71,7 +66,7 @@ func (c *Crawler) Run() {
 	}
 	wg.Wait()
 
-	c.log.Sugar().Info("✅ Crawl cycle finished")
+	c.log.Sugar().Info("Crawl cycle finished")
 }
 
 func splitKeywords(keywords []string, n int) [][]string {
@@ -108,7 +103,7 @@ func (c *Crawler) runProfile(profileID string, keywords []string, idx int) {
 		gpmClient.StopProfile(profileID)
 	}()
 
-	log.Sugar().Infof("%s Connected to GPM ✓", tag)
+	log.Sugar().Infof("%s Connected to GPM", tag)
 	c.crawlSearchWithMonitoring(browser, context, keywords, pw, gpmClient, profileID, log, tag)
 	log.Sugar().Infof("%s Done", tag)
 }
@@ -151,7 +146,7 @@ func (c *Crawler) crawlSearchWithMonitoring(browser playwright.Browser, context 
 		}
 		browser = newBrowser
 		context = newContext
-		log.Sugar().Infof("%s Reconnected ✓", tag)
+		log.Sugar().Infof("%s Reconnected", tag)
 	}
 
 	c.crawlSearch(context, keywords, log, tag)
@@ -189,7 +184,7 @@ func (c *Crawler) crawlSearch(context playwright.BrowserContext, keywords []stri
 		batchSize := utils.RandInt(c.cfg.BatchMin, c.cfg.BatchMax)
 		batch := keywords[i:min(i+batchSize, total)]
 
-		log.Sugar().Infof("%s Session | batch %d keywords", tag, len(batch))
+		log.Sugar().Infof("%s Session | %d keywords in batch", tag, len(batch))
 
 		for keywordIdx, keyword := range batch {
 			log.Sugar().Infof("%s [%d/%d] Searching: %q", tag, i+keywordIdx+1, total, keyword)
@@ -205,7 +200,7 @@ func (c *Crawler) crawlSearch(context playwright.BrowserContext, keywords []stri
 
 			if keywordIdx < len(batch)-1 {
 				sleepSec := utils.RandInt(c.cfg.SleepMinKeyword, c.cfg.SleepMaxKeyword)
-				log.Sugar().Infof("%s ⏳ Sleep %ds before next keyword", tag, sleepSec)
+				log.Sugar().Infof("%s Sleep %ds before next keyword", tag, sleepSec)
 				time.Sleep(time.Duration(sleepSec) * time.Second)
 			}
 		}
@@ -213,12 +208,12 @@ func (c *Crawler) crawlSearch(context playwright.BrowserContext, keywords []stri
 		i += batchSize
 		if i < total {
 			restSec := utils.RandInt(c.cfg.RestMinSession, c.cfg.RestMaxSession)
-			log.Sugar().Infof("%s 😴 Rest %ds | %d/%d keywords done", tag, restSec, i, total)
+			log.Sugar().Infof("%s Rest %ds | %d/%d done", tag, restSec, i, total)
 			time.Sleep(time.Duration(restSec) * time.Second)
 		}
 	}
 
-	log.Sugar().Infof("%s ✅ All %d keywords done", tag, total)
+	log.Sugar().Infof("%s All %d keywords done", tag, total)
 }
 
 func (c *Crawler) createPageWithRetry(context playwright.BrowserContext, maxRetries int, log *zap.Logger) (playwright.Page, error) {
@@ -317,7 +312,7 @@ func (c *Crawler) crawlKeyword(page playwright.Page, keyword string, log *zap.Lo
 	if len(results) > 0 {
 		c.pushToAPI(keyword, results, log, tag)
 	} else {
-		log.Sugar().Infof("%s   └─ %q → 0 videos", tag, keyword)
+		log.Sugar().Infof("%s   %q -> 0 videos", tag, keyword)
 	}
 }
 
@@ -359,10 +354,10 @@ func (c *Crawler) pushToAPI(keyword string, videos []models.VideoItem, log *zap.
 	}
 
 	if err := c.apiClient.PostUnclassified(posts); err != nil {
-		log.Sugar().Errorf("%s   └─ %q → ❌ push failed: %v", tag, keyword, err)
+		log.Sugar().Errorf("%s   %q -> push failed: %v", tag, keyword, err)
 		return
 	}
-	log.Sugar().Infof("%s   └─ %q → ✅ pushed %d posts to API", tag, keyword, len(posts))
+	log.Sugar().Infof("%s   %q -> pushed %d posts", tag, keyword, len(posts))
 }
 
 func containsAny(s string, subs []string) bool {
