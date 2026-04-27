@@ -242,40 +242,35 @@ func (c *Crawler) crawlSearch(context playwright.BrowserContext, keywords []stri
 		batchSize := utils.RandInt(c.cfg.BatchMin, c.cfg.BatchMax)
 		batch := keywords[i:min(i+batchSize, total)]
 
-		c.log.Info("----------------------------------------")
-		c.log.Info("New session started",
+		log.Info("----------------------------------------")
+		log.Info("New session started",
 			zap.Int("batch_size", len(batch)),
 			zap.Strings("keywords", batch),
 		)
-		c.log.Info("----------------------------------------")
+		log.Info("----------------------------------------")
 
-		// Process each keyword with its own tab
 		for keywordIdx, keyword := range batch {
-			c.log.Info(">>> Processing keyword",
+			log.Info(">>> Processing keyword",
 				zap.Int("keyword_number", keywordIdx+1),
 				zap.Int("total_in_batch", len(batch)),
 				zap.String("keyword", keyword),
 			)
 
-			// Create new page for each keyword
-			page, err := c.createPageWithRetry(context, 3)
+			page, err := c.createPageWithRetry(context, 3, log)
 			if err != nil {
-				c.log.Error("Failed to create page after retries", zap.String("keyword", keyword), zap.Error(err))
+				log.Error("Failed to create page after retries", zap.String("keyword", keyword), zap.Error(err))
 				continue
 			}
 
-			// Crawl single keyword with dedicated page
-			c.crawlKeyword(page, keyword)
+			c.crawlKeyword(page, keyword, log)
 
-			// Close page immediately after crawling
 			if err := page.Close(); err != nil {
-				c.log.Warn("Failed to close page", zap.String("keyword", keyword), zap.Error(err))
+				log.Warn("Failed to close page", zap.String("keyword", keyword), zap.Error(err))
 			}
 
-			// Sleep between keywords (except last one in batch)
 			if keywordIdx < len(batch)-1 {
 				sleepSec := utils.RandInt(c.cfg.SleepMinKeyword, c.cfg.SleepMaxKeyword)
-				c.log.Info("⏳ Sleeping before next keyword",
+				log.Info("⏳ Sleeping before next keyword",
 					zap.Int("seconds", sleepSec),
 					zap.String("next_keyword", batch[keywordIdx+1]),
 				)
@@ -283,26 +278,24 @@ func (c *Crawler) crawlSearch(context playwright.BrowserContext, keywords []stri
 			}
 		}
 
-		// Rest between sessions
 		i += batchSize
 		if i < total {
 			restSec := utils.RandInt(c.cfg.RestMinSession, c.cfg.RestMaxSession)
-			c.log.Info("----------------------------------------")
-			c.log.Info("Session completed, resting before next session",
+			log.Info("----------------------------------------")
+			log.Info("Session completed, resting before next session",
 				zap.Int("seconds", restSec),
 				zap.Int("keywords_completed", i),
 				zap.Int("keywords_remaining", total-i),
 			)
-			c.log.Info("----------------------------------------")
+			log.Info("----------------------------------------")
 			time.Sleep(time.Duration(restSec) * time.Second)
 		}
 	}
 
-	c.log.Info("✅ All keywords crawled for this profile")
+	log.Info("✅ All keywords crawled for this profile")
 }
 
-// createPageWithRetry attempts to create a new page with retry logic
-func (c *Crawler) createPageWithRetry(context playwright.BrowserContext, maxRetries int) (playwright.Page, error) {
+func (c *Crawler) createPageWithRetry(context playwright.BrowserContext, maxRetries int, log *zap.Logger) (playwright.Page, error) {
 	var page playwright.Page
 	var err error
 
@@ -312,12 +305,11 @@ func (c *Crawler) createPageWithRetry(context playwright.BrowserContext, maxRetr
 			return page, nil
 		}
 
-		// If target closed, no point retrying - browser is gone
 		if containsAny(err.Error(), []string{"target closed", "Target page", "browser has been closed"}) {
 			return nil, fmt.Errorf("browser context closed, cannot create page: %w", err)
 		}
 
-		c.log.Warn("Failed to create page",
+		log.Warn("Failed to create page",
 			zap.Int("attempt", attempt),
 			zap.Int("max_retries", maxRetries),
 			zap.Error(err),
@@ -331,12 +323,10 @@ func (c *Crawler) createPageWithRetry(context playwright.BrowserContext, maxRetr
 	return nil, fmt.Errorf("failed to create page after %d attempts: %w", maxRetries, err)
 }
 
-// crawlKeyword crawls a single keyword with its dedicated page
-func (c *Crawler) crawlKeyword(page playwright.Page, keyword string) {
+func (c *Crawler) crawlKeyword(page playwright.Page, keyword string, log *zap.Logger) {
 	videosByKeyword := make(map[string][]map[string]any)
 	var mu sync.Mutex
 
-	// Setup response interceptor for this page
 	page.On("response", func(res playwright.Response) {
 		if !containsAny(res.URL(), []string{searchAPI}) {
 			return
@@ -375,7 +365,7 @@ func (c *Crawler) crawlKeyword(page playwright.Page, keyword string) {
 				newCount++
 			}
 			if newCount > 0 {
-				c.log.Info("   📥 Videos received",
+				log.Info("   📥 Videos received",
 					zap.String("keyword", kw),
 					zap.Int("new", newCount),
 					zap.Int("total", len(videosByKeyword[kw])),
@@ -384,19 +374,17 @@ func (c *Crawler) crawlKeyword(page playwright.Page, keyword string) {
 		}(res, keyword)
 	})
 
-	// Navigate to TikTok home first
 	if _, err := page.Goto(tiktokURL, playwright.PageGotoOptions{
 		WaitUntil: playwright.WaitUntilStateDomcontentloaded,
 		Timeout:   playwright.Float(30000),
 	}); err != nil {
-		c.log.Warn("Failed to load TikTok home", zap.String("keyword", keyword), zap.Error(err))
+		log.Warn("Failed to load TikTok home", zap.String("keyword", keyword), zap.Error(err))
 		return
 	}
 	utils.Sleep(4000, 7000)
 	_ = utils.RandomMouseMove(page)
 	utils.Sleep(500, 1500)
 
-	// Navigate to search page
 	encoded := url.QueryEscape(keyword)
 	ts := time.Now().UnixMilli()
 	searchURL := fmt.Sprintf("%s/search/video?q=%s&t=%d", tiktokURL, encoded, ts)
@@ -405,32 +393,29 @@ func (c *Crawler) crawlKeyword(page playwright.Page, keyword string) {
 		WaitUntil: playwright.WaitUntilStateDomcontentloaded,
 		Timeout:   playwright.Float(30000),
 	}); err != nil {
-		c.log.Warn("Failed to navigate to search", zap.String("keyword", keyword), zap.Error(err))
+		log.Warn("Failed to navigate to search", zap.String("keyword", keyword), zap.Error(err))
 		return
 	}
 	utils.Sleep(6000, 9000)
 
-	// Scroll and interact
 	scrollTimes := utils.RandInt(1, 4)
 	_ = utils.HumanScroll(page, scrollTimes)
 	_ = utils.RandomViewVideo(page)
 
 	utils.Sleep(1500, 2500)
 
-	// Get collected videos
 	mu.Lock()
 	items := videosByKeyword[keyword]
 	mu.Unlock()
 
-	c.log.Info("   ✅ Keyword completed",
+	log.Info("   ✅ Keyword completed",
 		zap.String("keyword", keyword),
 		zap.Int("videos_collected", len(items)),
 	)
 
-	// Parse and save results
 	results := c.parseVideos(keyword, items)
 	if len(results) > 0 {
-		c.saveToFile(keyword, results)
+		c.saveToFile(keyword, results, log)
 	}
 }
 
@@ -478,7 +463,7 @@ func (c *Crawler) parseVideos(keyword string, items []map[string]any) []models.V
 	return results
 }
 
-func (c *Crawler) saveToFile(keyword string, videos []models.VideoItem) {
+func (c *Crawler) saveToFile(keyword string, videos []models.VideoItem, log *zap.Logger) {
 	// Convert to TiktokPost format
 	var posts []parser.TiktokPost
 	for _, v := range videos {
@@ -488,11 +473,11 @@ func (c *Crawler) saveToFile(keyword string, videos []models.VideoItem) {
 
 	// Post to API (unclassified)
 	if err := c.apiClient.PostUnclassified(posts); err != nil {
-		c.log.Error("   ❌ Failed to post to API", zap.String("keyword", keyword), zap.Error(err))
+		log.Error("   ❌ Failed to post to API", zap.String("keyword", keyword), zap.Error(err))
 		return
 	}
 
-	c.log.Info("   ✅ Posted to API",
+	log.Info("   ✅ Posted to API",
 		zap.String("keyword", keyword),
 		zap.Int("count", len(posts)),
 	)
