@@ -101,18 +101,16 @@ func splitKeywords(keywords []string, n int) [][]string {
 }
 
 func (c *Crawler) runProfile(profileID string, keywords []string, idx int) {
-	log := c.log.With(
-		zap.String("profile_id", profileID),
-		zap.Int("profile_index", idx+1),
-	)
+	prefix := fmt.Sprintf("[profile-%d | %s]", idx+1, profileID[:8])
+	log := c.log.With(zap.String("profile", prefix))
 
 	log.Info("========================================")
-	log.Info("Profile starting", zap.Int("keywords_count", len(keywords)))
+	log.Info(prefix+" Profile starting", zap.Int("keywords_count", len(keywords)))
 	log.Info("========================================")
 
 	pw, err := playwright.Run()
 	if err != nil {
-		log.Error("Could not start playwright", zap.Error(err))
+		log.Error(prefix+" Could not start playwright", zap.Error(err))
 		return
 	}
 	defer pw.Stop()
@@ -120,23 +118,22 @@ func (c *Crawler) runProfile(profileID string, keywords []string, idx int) {
 	gpmClient := gpm.NewClient(c.cfg.GPMAPI, log)
 	browser, context, err := c.connectGPMWithRetry(pw, gpmClient, profileID, log, 3)
 	if err != nil {
-		log.Error("Failed to connect GPM after retries", zap.Error(err))
+		log.Error(prefix+" Failed to connect GPM after retries", zap.Error(err))
 		return
 	}
 	defer func() {
 		if browser != nil {
 			if err := browser.Close(); err != nil {
-				log.Warn("Failed to close browser", zap.Error(err))
+				log.Warn(prefix+" Failed to close browser", zap.Error(err))
 			}
 		}
 		gpmClient.StopProfile(profileID)
 	}()
 
-	// Monitor browser connection and crawl
 	c.crawlSearchWithMonitoring(browser, context, keywords, pw, gpmClient, profileID, log)
 
 	log.Info("========================================")
-	log.Info("Profile finished")
+	log.Info(prefix + " Profile finished")
 	log.Info("========================================")
 }
 
@@ -197,7 +194,7 @@ func (c *Crawler) crawlSearchWithMonitoring(browser playwright.Browser, context 
 			log.Info("Reconnected to GPM successfully")
 		}
 
-		c.crawlSearch(context, keywords)
+		c.crawlSearch(context, keywords, log)
 		return
 	}
 }
@@ -237,7 +234,7 @@ func (c *Crawler) connectGPM(pw *playwright.Playwright, gpmClient *gpm.Client, p
 	return browser, contexts[0], nil
 }
 
-func (c *Crawler) crawlSearch(context playwright.BrowserContext, keywords []string) {
+func (c *Crawler) crawlSearch(context playwright.BrowserContext, keywords []string, log *zap.Logger) {
 	total := len(keywords)
 	i := 0
 
