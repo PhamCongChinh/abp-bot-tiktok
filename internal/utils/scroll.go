@@ -147,8 +147,8 @@ func RandomViewVideo(page playwright.Page) error {
 		video.Click(playwright.LocatorClickOptions{Force: playwright.Bool(true)})
 	}
 
-	// Watch video
-	Sleep(RandInt(8000, 25000), RandInt(8000, 25000))
+	// Watch video 8-25 seconds
+	Sleep(8000, 25000)
 
 	// 25% chance: double-click to like (heart)
 	if rand.Float64() < 0.25 {

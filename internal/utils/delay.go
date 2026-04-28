@@ -7,11 +7,17 @@ import (
 
 // RandInt returns a random int in [min, max]
 func RandInt(min, max int) int {
+	if min >= max {
+		return min
+	}
 	return min + rand.Intn(max-min+1)
 }
 
 // Sleep sleeps for a random duration between minMs and maxMs milliseconds
 func Sleep(minMs, maxMs int) {
+	if minMs > maxMs {
+		minMs, maxMs = maxMs, minMs
+	}
 	ms := RandInt(minMs, maxMs)
 	time.Sleep(time.Duration(ms) * time.Millisecond)
 }
