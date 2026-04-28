@@ -150,6 +150,16 @@ func RandomViewVideo(page playwright.Page) error {
 	// Watch video
 	Sleep(RandInt(8000, 25000), RandInt(8000, 25000))
 
+	// 25% chance: double-click to like (heart)
+	if rand.Float64() < 0.25 {
+		if box != nil {
+			likeX := box.X + float64(RandInt(10, int(box.Width-10)))
+			likeY := box.Y + float64(RandInt(10, int(box.Height-10)))
+			page.Mouse().Dblclick(likeX, likeY)
+			Sleep(500, 1000)
+		}
+	}
+
 	// 30% chance: scroll comments
 	if rand.Float64() < 0.3 {
 		page.Mouse().Wheel(0, float64(RandInt(300, 800)))
