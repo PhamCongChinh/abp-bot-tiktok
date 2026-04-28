@@ -79,7 +79,7 @@ func splitKeywords(keywords []string, n int) [][]string {
 
 func (c *Crawler) runProfile(profileID string, keywords []string, idx int) {
 	tag := fmt.Sprintf("[P%d|%s...]", idx+1, profileID[:8])
-	log := c.log.With(zap.String("tag", tag))
+	log := c.log
 
 	log.Sugar().Infof("%s Starting | %d keywords", tag, len(keywords))
 
