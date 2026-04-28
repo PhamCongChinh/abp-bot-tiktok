@@ -9,43 +9,45 @@ import (
 // HumanScroll simulates human-like scrolling behavior
 func HumanScroll(page playwright.Page, times int) error {
 	locator := page.Locator("[id^='grid-item-container-']")
+	prevCount := 0
+	sameCountStreak := 0
 
 	for i := 0; i < times; i++ {
-		// Move mouse slightly (like a real user)
-		if err := page.Mouse().Move(
+		page.Mouse().Move(
 			float64(RandInt(200, 600)),
 			float64(RandInt(200, 500)),
-		); err != nil {
-			return err
-		}
+		)
 
 		count, err := locator.Count()
 		if err != nil {
 			return err
 		}
-
 		if count == 0 {
 			break
 		}
 
-		if count > 0 {
-			// Scroll to a visible item (avoid out-of-range index)
-			index := count - 1
-			if index > 10 {
-				index = 10
-			}
-			err := locator.Nth(index).ScrollIntoViewIfNeeded(playwright.LocatorScrollIntoViewIfNeededOptions{
-				Timeout: playwright.Float(3000),
-			})
-			if err != nil {
-				// Fallback to mouse wheel
-				page.Mouse().Wheel(0, float64(RandInt(400, 800)))
+		// Detect end of list: count unchanged for 2 consecutive scrolls
+		if count == prevCount {
+			sameCountStreak++
+			if sameCountStreak >= 2 {
+				break
 			}
 		} else {
+			sameCountStreak = 0
+		}
+		prevCount = count
+
+		index := count - 1
+		if index > 10 {
+			index = 10
+		}
+		err = locator.Nth(index).ScrollIntoViewIfNeeded(playwright.LocatorScrollIntoViewIfNeededOptions{
+			Timeout: playwright.Float(3000),
+		})
+		if err != nil {
 			page.Mouse().Wheel(0, float64(RandInt(400, 800)))
 		}
 
-		// Short pause to watch
 		Sleep(800, 1500)
 
 		// 20% chance: scroll back up a bit
@@ -59,7 +61,6 @@ func HumanScroll(page playwright.Page, times int) error {
 			Sleep(6000, 12000)
 		}
 
-		// Normal pause between scrolls
 		Sleep(700, 1200)
 	}
 

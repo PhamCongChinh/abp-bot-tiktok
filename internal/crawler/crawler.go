@@ -300,7 +300,7 @@ func (c *Crawler) crawlKeyword(page playwright.Page, keyword string, log *zap.Lo
 		return
 	}
 	utils.Sleep(6000, 9000)
-	_ = utils.HumanScroll(page, utils.RandInt(1, 4))
+	_ = utils.HumanScroll(page, utils.RandInt(5, 10))
 	_ = utils.RandomViewVideo(page)
 	utils.Sleep(1500, 2500)
 
