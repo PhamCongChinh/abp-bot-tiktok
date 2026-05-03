@@ -9,48 +9,38 @@ import (
 // HumanScroll simulates human-like scrolling behavior
 func HumanScroll(page playwright.Page, times int) error {
 	for i := 0; i < times; i++ {
-		// Get current scroll position
-		currentScroll, _ := page.Evaluate(`window.pageYOffset`)
-		
-		// Scroll to bottom of current viewport
 		scrollAmount := RandInt(800, 1200)
+		
+		// Method 1: Scroll main container
 		page.Evaluate(`(amount) => {
-			const start = window.pageYOffset;
-			const target = start + amount;
-			const duration = 800;
-			const startTime = performance.now();
+			const container = document.querySelector('#main-content-search_top') 
+				|| document.querySelector('[data-e2e="search_top-item-list"]')
+				|| document.querySelector('div[class*="DivItemContainer"]')
+				|| document.body;
 			
-			function scroll(currentTime) {
-				const elapsed = currentTime - startTime;
-				const progress = Math.min(elapsed / duration, 1);
-				const easeProgress = progress * (2 - progress); // ease out
-				window.scrollTo(0, start + (target - start) * easeProgress);
-				
-				if (progress < 1) {
-					requestAnimationFrame(scroll);
-				}
+			if (container) {
+				container.scrollTop = container.scrollTop + amount;
 			}
-			requestAnimationFrame(scroll);
 		}`, scrollAmount)
+		
+		// Method 2: Window scroll as backup
+		page.Evaluate(`(amount) => window.scrollBy(0, amount)`, scrollAmount)
+		
+		Sleep(2000, 3000)
+
+		// Method 3: Scroll to last visible video
+		page.Evaluate(`
+			const videos = document.querySelectorAll('[data-e2e="search-common-video"], [class*="DivItemContainer"], div[class*="video"]');
+			if (videos.length > 3) {
+				videos[videos.length - 2].scrollIntoView({ behavior: 'smooth', block: 'center' });
+			}
+		`)
 		
 		Sleep(1500, 2500)
 
-		// Verify scroll happened
-		newScroll, _ := page.Evaluate(`window.pageYOffset`)
-		if newScroll == currentScroll {
-			// Try alternative: scroll last video into view
-			page.Evaluate(`
-				const videos = document.querySelectorAll('[data-e2e="search-common-video"]');
-				if (videos.length > 0) {
-					videos[videos.length - 1].scrollIntoView({ behavior: 'smooth', block: 'center' });
-				}
-			`)
-			Sleep(1500, 2000)
-		}
-
-		// 20% chance: scroll back up a bit
+		// 20% chance: scroll back up
 		if rand.Float64() < 0.2 {
-			page.Evaluate(`window.scrollBy({ top: -300, behavior: 'smooth' })`)
+			page.Evaluate(`window.scrollBy(0, -300)`)
 			Sleep(500, 800)
 		}
 
@@ -59,7 +49,7 @@ func HumanScroll(page playwright.Page, times int) error {
 			Sleep(3000, 6000)
 		}
 
-		Sleep(800, 1500)
+		Sleep(1000, 1500)
 	}
 
 	return nil
