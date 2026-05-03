@@ -38,10 +38,6 @@ func New(cfg *config.Config, log *zap.Logger, videoRepo *repository.VideoReposit
 	return &Crawler{cfg: cfg, log: log, videoRepo: videoRepo, apiClient: apiClient}
 }
 
-func (c *Crawler) SetKeywords(keywords []string) {
-	c.cfg.Keywords = keywords
-}
-
 func (c *Crawler) Run() {
 	if !c.cfg.UseGPM {
 		c.log.Error("GPM config required. Set GPM_API and PROFILE_IDS in .env")
@@ -396,4 +392,11 @@ func mapGet(m map[string]any, key string) any {
 		return nil
 	}
 	return m[key]
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
