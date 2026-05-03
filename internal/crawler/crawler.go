@@ -298,7 +298,13 @@ func (c *Crawler) crawlKeyword(page playwright.Page, keyword string, log *zap.Lo
 		return
 	}
 	utils.Sleep(6000, 9000)
-	_ = utils.HumanScroll(page, utils.RandInt(5, 10))
+	
+	// Scroll to load more videos
+	scrollTimes := utils.RandInt(5, 10)
+	log.Sugar().Infof("%s   Scrolling %d times to load videos...", tag, scrollTimes)
+	_ = utils.HumanScroll(page, scrollTimes)
+	
+	// Random view video
 	_ = utils.RandomViewVideo(page)
 	utils.Sleep(1500, 2500)
 
