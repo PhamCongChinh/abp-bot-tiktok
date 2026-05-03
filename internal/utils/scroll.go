@@ -8,26 +8,23 @@ import (
 
 // HumanScroll simulates human-like scrolling behavior
 func HumanScroll(page playwright.Page, times int) error {
+	// Click on page body first to ensure focus
+	page.Evaluate(`document.body.click()`)
+	Sleep(500, 800)
+
 	for i := 0; i < times; i++ {
-		// Scroll down using page.Evaluate for more visible scrolling
-		scrollAmount := RandInt(400, 800)
-		page.Evaluate(`(amount) => {
-			window.scrollBy({
-				top: amount,
-				behavior: 'smooth'
-			});
-		}`, scrollAmount)
+		// Use PageDown key for visible scrolling
+		numPresses := RandInt(2, 4)
+		for j := 0; j < numPresses; j++ {
+			page.Keyboard().Press("PageDown")
+			Sleep(300, 600)
+		}
 		
-		Sleep(1200, 2000) // Longer pause to see the scroll
+		Sleep(1500, 2500) // Pause to see the scroll
 
 		// 20% chance: scroll back up a bit
 		if rand.Float64() < 0.2 {
-			page.Evaluate(`(amount) => {
-				window.scrollBy({
-					top: -amount,
-					behavior: 'smooth'
-				});
-			}`, RandInt(150, 300))
+			page.Keyboard().Press("PageUp")
 			Sleep(500, 800)
 		}
 
@@ -36,7 +33,7 @@ func HumanScroll(page playwright.Page, times int) error {
 			Sleep(3000, 6000)
 		}
 
-		Sleep(800, 1500)
+		Sleep(1000, 1500)
 	}
 
 	return nil
