@@ -88,11 +88,5 @@ func (c *Client) post(path, index string, posts []parser.TiktokPost) error {
 		return fmt.Errorf("server returned status %d", resp.StatusCode)
 	}
 
-	c.log.Info("✅ Posts sent to API",
-		zap.String("url", url),
-		zap.String("index", index),
-		zap.Int("count", len(posts)),
-		zap.Int("status", resp.StatusCode),
-	)
 	return nil
 }
