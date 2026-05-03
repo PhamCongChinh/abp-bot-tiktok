@@ -233,6 +233,8 @@ func (c *Crawler) createPageWithRetry(context playwright.BrowserContext, maxRetr
 }
 
 func (c *Crawler) crawlKeyword(page playwright.Page, keyword string, log *zap.Logger, tag string) {
+	startTime := time.Now() // Bắt đầu đếm thời gian
+	
 	var mu sync.Mutex
 	var collectedItems []map[string]any
 
@@ -305,10 +307,15 @@ func (c *Crawler) crawlKeyword(page playwright.Page, keyword string, log *zap.Lo
 	mu.Unlock()
 
 	results := c.parseVideos(keyword, items)
+	
+	// Tính thời gian crawl
+	duration := time.Since(startTime)
+	
 	if len(results) > 0 {
 		c.pushToAPI(keyword, results, log, tag)
+		log.Sugar().Infof("%s   %q -> %d videos → %s | ⏱️ %s", tag, keyword, len(results), c.cfg.APIURL, duration.Round(time.Second))
 	} else {
-		log.Sugar().Infof("%s   %q -> 0 videos", tag, keyword)
+		log.Sugar().Infof("%s   %q -> 0 videos | ⏱️ %s", tag, keyword, duration.Round(time.Second))
 	}
 }
 
@@ -350,10 +357,10 @@ func (c *Crawler) pushToAPI(keyword string, videos []models.VideoItem, log *zap.
 	}
 
 	if err := c.apiClient.PostUnclassified(posts); err != nil {
-		log.Sugar().Errorf("%s   %q -> push failed: %v", tag, keyword, err)
+		log.Sugar().Errorf("%s   %q -> push to %s failed: %v", tag, keyword, c.cfg.APIURL, err)
 		return
 	}
-	log.Sugar().Infof("%s   %q -> pushed %d posts", tag, keyword, len(posts))
+	// Log đã được gộp vào crawlKeyword
 }
 
 func containsAny(s string, subs []string) bool {
