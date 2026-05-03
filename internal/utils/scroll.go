@@ -8,32 +8,58 @@ import (
 
 // HumanScroll simulates human-like scrolling behavior
 func HumanScroll(page playwright.Page, times int) error {
-	// Click on page body first to ensure focus
-	page.Evaluate(`document.body.click()`)
-	Sleep(500, 800)
-
 	for i := 0; i < times; i++ {
-		// Use PageDown key for visible scrolling
-		numPresses := RandInt(2, 4)
-		for j := 0; j < numPresses; j++ {
-			page.Keyboard().Press("PageDown")
-			Sleep(300, 600)
-		}
+		// Get current scroll position
+		currentScroll, _ := page.Evaluate(`window.pageYOffset`)
 		
-		Sleep(1500, 2500) // Pause to see the scroll
+		// Scroll to bottom of current viewport
+		scrollAmount := RandInt(800, 1200)
+		page.Evaluate(`(amount) => {
+			const start = window.pageYOffset;
+			const target = start + amount;
+			const duration = 800;
+			const startTime = performance.now();
+			
+			function scroll(currentTime) {
+				const elapsed = currentTime - startTime;
+				const progress = Math.min(elapsed / duration, 1);
+				const easeProgress = progress * (2 - progress); // ease out
+				window.scrollTo(0, start + (target - start) * easeProgress);
+				
+				if (progress < 1) {
+					requestAnimationFrame(scroll);
+				}
+			}
+			requestAnimationFrame(scroll);
+		}`, scrollAmount)
+		
+		Sleep(1500, 2500)
+
+		// Verify scroll happened
+		newScroll, _ := page.Evaluate(`window.pageYOffset`)
+		if newScroll == currentScroll {
+			// Try alternative: scroll last video into view
+			page.Evaluate(`
+				const videos = document.querySelectorAll('[data-e2e="search-common-video"]');
+				if (videos.length > 0) {
+					videos[videos.length - 1].scrollIntoView({ behavior: 'smooth', block: 'center' });
+				}
+			`)
+			Sleep(1500, 2000)
+		}
 
 		// 20% chance: scroll back up a bit
 		if rand.Float64() < 0.2 {
-			page.Keyboard().Press("PageUp")
+			page.Evaluate(`window.scrollBy({ top: -300, behavior: 'smooth' })`)
 			Sleep(500, 800)
 		}
 
-		// 10% chance: long pause (user got distracted)
+		// 10% chance: long pause
 		if rand.Float64() < 0.1 {
 			Sleep(3000, 6000)
 		}
 
-		Sleep(1000, 1500)
+		Sleep(800, 1500)
 	}
 
 	return nil
