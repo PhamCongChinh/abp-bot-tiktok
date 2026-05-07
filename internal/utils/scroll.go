@@ -7,49 +7,52 @@ import (
 )
 
 // HumanScroll simulates human-like scrolling behavior
+// Mirrors scraper_tt scroll_utils.py: uses grid-item-container locator + scroll_into_view
 func HumanScroll(page playwright.Page, times int) error {
-	for i := 0; i < times; i++ {
-		scrollAmount := RandInt(800, 1200)
-		
-		// Method 1: Scroll main container
-		page.Evaluate(`(amount) => {
-			const container = document.querySelector('#main-content-search_top') 
-				|| document.querySelector('[data-e2e="search_top-item-list"]')
-				|| document.querySelector('div[class*="DivItemContainer"]')
-				|| document.body;
-			
-			if (container) {
-				container.scrollTop = container.scrollTop + amount;
-			}
-		}`, scrollAmount)
-		
-		// Method 2: Window scroll as backup
-		page.Evaluate(`(amount) => window.scrollBy(0, amount)`, scrollAmount)
-		
-		Sleep(2000, 3000)
+	locator := page.Locator("[id^='grid-item-container-']")
 
-		// Method 3: Scroll to last visible video
-		page.Evaluate(`
-			const videos = document.querySelectorAll('[data-e2e="search-common-video"], [class*="DivItemContainer"], div[class*="video"]');
-			if (videos.length > 3) {
-				videos[videos.length - 2].scrollIntoView({ behavior: 'smooth', block: 'center' });
-			}
-		`)
-		
-		Sleep(1500, 2500)
+	for i := 0; i < times; i++ {
+		count, err := locator.Count()
+		if err != nil || count == 0 {
+			// Fallback: mouse wheel if no items found yet
+			page.Mouse().Wheel(0, float64(RandInt(400, 800)))
+			Sleep(800, 1500)
+			continue
+		}
+
+		// Move mouse slightly (like a human)
+		page.Mouse().Move(
+			float64(RandInt(200, 600)),
+			float64(RandInt(200, 500)),
+		)
+
+		// Scroll to item near the bottom of visible list (same as scraper_tt: min(count-1, 10))
+		index := count - 1
+		if index > 10 {
+			index = 10
+		}
+		item := locator.Nth(index)
+		if err := item.ScrollIntoViewIfNeeded(playwright.LocatorScrollIntoViewIfNeededOptions{
+			Timeout: playwright.Float(3000),
+		}); err != nil {
+			// Fallback to mouse wheel
+			page.Mouse().Wheel(0, float64(RandInt(400, 800)))
+		}
+
+		Sleep(800, 1500)
 
 		// 20% chance: scroll back up
 		if rand.Float64() < 0.2 {
-			page.Evaluate(`window.scrollBy(0, -300)`)
-			Sleep(500, 800)
+			page.Mouse().Wheel(0, float64(-RandInt(150, 300)))
+			Sleep(200, 400)
 		}
 
-		// 10% chance: long pause
+		// 10% chance: long pause (user got distracted)
 		if rand.Float64() < 0.1 {
-			Sleep(3000, 6000)
+			Sleep(6000, 12000)
 		}
 
-		Sleep(1000, 1500)
+		Sleep(700, 1200)
 	}
 
 	return nil
@@ -67,6 +70,7 @@ func RandomMouseMove(page playwright.Page) error {
 }
 
 // RandomViewVideo simulates human video viewing behavior
+// Mirrors scraper_tt browser_actions.py: random_view_video
 func RandomViewVideo(page playwright.Page) error {
 	locator := page.Locator("[id^='grid-item-container-']")
 	count, err := locator.Count()
@@ -92,6 +96,8 @@ func RandomViewVideo(page playwright.Page) error {
 	index := rand.Intn(maxCandidates + 1)
 	video := locator.Nth(index)
 
+	originalURL := page.URL()
+
 	// Scroll to video
 	video.ScrollIntoViewIfNeeded()
 	Sleep(800, 2000)
@@ -112,7 +118,6 @@ func RandomViewVideo(page playwright.Page) error {
 			Sleep(200, 600)
 		}
 
-		// Final hover
 		page.Mouse().Move(startX, startY, playwright.MouseMoveOptions{
 			Steps: playwright.Int(RandInt(10, 20)),
 		})
@@ -138,30 +143,27 @@ func RandomViewVideo(page playwright.Page) error {
 	// Watch video 8-25 seconds
 	Sleep(8000, 25000)
 
-	// 25% chance: double-click to like (heart)
-	if rand.Float64() < 0.25 {
-		if box != nil {
-			likeX := box.X + float64(RandInt(10, int(box.Width-10)))
-			likeY := box.Y + float64(RandInt(10, int(box.Height-10)))
-			page.Mouse().Dblclick(likeX, likeY)
-			Sleep(500, 1000)
-		}
-	}
-
 	// 30% chance: scroll comments
 	if rand.Float64() < 0.3 {
 		page.Mouse().Wheel(0, float64(RandInt(300, 800)))
 		Sleep(2000, 5000)
 	}
 
-	// Go back
-	if _, err := page.GoBack(); err != nil {
-		return err
+	// Go back - always try to return to original URL
+	if currentURL := page.URL(); currentURL != originalURL {
+		if _, err := page.GoBack(); err != nil {
+			// Fallback: navigate directly back
+			page.Goto(originalURL, playwright.PageGotoOptions{
+				WaitUntil: playwright.WaitUntilStateDomcontentloaded,
+				Timeout:   playwright.Float(60000),
+			})
+		} else {
+			page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
+				State: playwright.LoadStateDomcontentloaded,
+			})
+		}
+		Sleep(3000, 6000)
 	}
-	page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
-		State: playwright.LoadStateDomcontentloaded,
-	})
-	Sleep(3000, 6000)
 
 	return nil
 }
