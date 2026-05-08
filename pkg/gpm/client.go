@@ -54,27 +54,36 @@ func (c *Client) StartProfile(profileID string) (string, error) {
 			return "", fmt.Errorf("GPM API returned status %d: %s", resp.StatusCode, string(body))
 		}
 
-		// Log raw response to debug
-		c.log.Sugar().Infof("GPM raw response: %s", string(body))
+		// Parse response
+		var raw map[string]any
+		if err := json.Unmarshal(body, &raw); err != nil {
+			return "", fmt.Errorf("failed to decode response: %w", err)
+		}
+
+		// Check success flag - if false, no point retrying
+		if success, ok := raw["success"].(bool); ok && !success {
+			msg, _ := raw["message"].(string)
+			return "", fmt.Errorf("GPM error: %s", msg)
+		}
 
 		var result StartProfileResponse
 		if err := json.Unmarshal(body, &result); err != nil {
 			return "", fmt.Errorf("failed to decode response: %w", err)
 		}
 
-		// Try remote_debugging_address first, fallback to ws_endpoint
-		debugAddr = result.Data.RemoteDebuggingAddress
-		if debugAddr == "" && result.Data.WSEndpoint != "" {
-			// ws_endpoint is already a full ws:// URL, return directly
-			c.log.Sugar().Infof("GPM profile %s started (via ws_endpoint)", profileID[:8])
+		// Try ws_endpoint first (direct WS URL), fallback to remote_debugging_address
+		if result.Data.WSEndpoint != "" {
+			c.log.Sugar().Infof("GPM profile %s started", profileID[:8])
 			return result.Data.WSEndpoint, nil
 		}
+
+		debugAddr = result.Data.RemoteDebuggingAddress
 		if debugAddr != "" {
 			break
 		}
 
-		// remote_debugging_address empty - browser still starting, wait and retry
-		c.log.Sugar().Warnf("GPM profile %s: empty debug address (attempt %d/%d), waiting...", profileID[:8], attempt, maxRetries)
+		// Both empty - browser still starting, wait and retry
+		c.log.Sugar().Warnf("GPM profile %s: browser not ready (attempt %d/%d), waiting...", profileID[:8], attempt, maxRetries)
 		time.Sleep(5 * time.Second)
 	}
 
