@@ -34,26 +34,43 @@ func NewClient(apiURL string, log *zap.Logger) *Client {
 func (c *Client) StartProfile(profileID string) (string, error) {
 	url := fmt.Sprintf("%s/profiles/start/%s", c.apiURL, profileID)
 
-	resp, err := c.client.Get(url)
-	if err != nil {
-		return "", fmt.Errorf("failed to start profile: %w", err)
+	// Retry start profile up to 5 times - GPM sometimes needs time to launch browser
+	var debugAddr string
+	maxRetries := 5
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		resp, err := c.client.Get(url)
+		if err != nil {
+			if attempt == maxRetries {
+				return "", fmt.Errorf("failed to start profile: %w", err)
+			}
+			time.Sleep(3 * time.Second)
+			continue
+		}
+
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			return "", fmt.Errorf("GPM API returned status %d: %s", resp.StatusCode, string(body))
+		}
+
+		var result StartProfileResponse
+		if err := json.Unmarshal(body, &result); err != nil {
+			return "", fmt.Errorf("failed to decode response: %w", err)
+		}
+
+		debugAddr = result.Data.RemoteDebuggingAddress
+		if debugAddr != "" {
+			break
+		}
+
+		// remote_debugging_address empty - browser still starting, wait and retry
+		c.log.Sugar().Warnf("GPM profile %s: empty debug address (attempt %d/%d), waiting...", profileID[:8], attempt, maxRetries)
+		time.Sleep(5 * time.Second)
 	}
-	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("GPM API returned status %d: %s", resp.StatusCode, string(body))
-	}
-
-	var result StartProfileResponse
-	if err := json.Unmarshal(body, &result); err != nil {
-		return "", fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	debugAddr := result.Data.RemoteDebuggingAddress
 	if debugAddr == "" {
-		return "", fmt.Errorf("empty remote_debugging_address in response")
+		return "", fmt.Errorf("empty remote_debugging_address after %d attempts", maxRetries)
 	}
 
 	// Get WebSocket endpoint from CDP
@@ -62,7 +79,7 @@ func (c *Client) StartProfile(profileID string) (string, error) {
 		return "", fmt.Errorf("failed to get WebSocket URL: %w", err)
 	}
 
-	c.log.Info("GPM profile started", zap.String("profile_id", profileID))
+	c.log.Sugar().Infof("GPM profile %s started", profileID[:8])
 	return wsURL, nil
 }
 
@@ -110,7 +127,7 @@ func (c *Client) StopProfile(profileID string) error {
 
 	resp, err := c.client.Get(url)
 	if err != nil {
-		c.log.Warn("Failed to stop profile (network error)", zap.Error(err))
+		c.log.Sugar().Warnf("Failed to stop profile %s: %v", profileID[:8], err)
 		return fmt.Errorf("failed to stop profile: %w", err)
 	}
 	defer resp.Body.Close()
@@ -118,13 +135,10 @@ func (c *Client) StopProfile(profileID string) error {
 	body, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
-		c.log.Warn("GPM stop returned non-200", 
-			zap.Int("status", resp.StatusCode), 
-			zap.String("body", string(body)),
-		)
+		c.log.Sugar().Warnf("GPM stop profile %s returned %d: %s", profileID[:8], resp.StatusCode, string(body))
 		return fmt.Errorf("GPM stop returned status %d", resp.StatusCode)
 	}
 
-	c.log.Info("GPM profile stopped", zap.String("profile_id", profileID))
+	c.log.Sugar().Infof("GPM profile %s stopped", profileID[:8])
 	return nil
 }
