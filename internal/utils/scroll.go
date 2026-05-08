@@ -9,21 +9,23 @@ import (
 // HumanScroll simulates human-like scrolling behavior
 func HumanScroll(page playwright.Page, times int) error {
 	for i := 0; i < times; i++ {
-		// Scroll ~80-95% of viewport height per scroll (near full screen)
-		page.Evaluate(`() => {
-			const vh = window.innerHeight;
-			const amount = Math.floor(vh * (0.80 + Math.random() * 0.15));
-			window.scrollBy({ top: amount, behavior: 'smooth' });
-		}`)
+		// Use mouse wheel - most reliable for TikTok's custom scroll containers
+		page.Mouse().Move(
+			float64(RandInt(400, 800)),
+			float64(RandInt(300, 500)),
+		)
+		Sleep(100, 200)
 
-		Sleep(1200, 2000)
+		// Scroll ~80-95% of viewport height using wheel delta
+		// Wheel delta ~100 per notch, viewport ~900px → need ~7-9 notches = 700-900 delta
+		wheelDelta := RandInt(700, 900)
+		page.Mouse().Wheel(0, float64(wheelDelta))
+
+		Sleep(1500, 2500)
 
 		// 15% chance: scroll back up slightly
 		if rand.Float64() < 0.15 {
-			page.Evaluate(`() => {
-				const vh = window.innerHeight;
-				window.scrollBy({ top: -Math.floor(vh * 0.2), behavior: 'smooth' });
-			}`)
+			page.Mouse().Wheel(0, float64(-RandInt(150, 200)))
 			Sleep(500, 1000)
 		}
 
