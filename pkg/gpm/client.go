@@ -54,12 +54,21 @@ func (c *Client) StartProfile(profileID string) (string, error) {
 			return "", fmt.Errorf("GPM API returned status %d: %s", resp.StatusCode, string(body))
 		}
 
+		// Log raw response to debug
+		c.log.Sugar().Infof("GPM raw response: %s", string(body))
+
 		var result StartProfileResponse
 		if err := json.Unmarshal(body, &result); err != nil {
 			return "", fmt.Errorf("failed to decode response: %w", err)
 		}
 
+		// Try remote_debugging_address first, fallback to ws_endpoint
 		debugAddr = result.Data.RemoteDebuggingAddress
+		if debugAddr == "" && result.Data.WSEndpoint != "" {
+			// ws_endpoint is already a full ws:// URL, return directly
+			c.log.Sugar().Infof("GPM profile %s started (via ws_endpoint)", profileID[:8])
+			return result.Data.WSEndpoint, nil
+		}
 		if debugAddr != "" {
 			break
 		}
