@@ -7,47 +7,27 @@ import (
 )
 
 // HumanScroll simulates human-like scrolling behavior
-// Mirrors scraper_tt scroll_utils.py: uses grid-item-container locator + scroll_into_view
 func HumanScroll(page playwright.Page, times int) error {
-	locator := page.Locator("[id^='grid-item-container-']")
-
 	for i := 0; i < times; i++ {
-		count, err := locator.Count()
-		if err != nil || count == 0 {
-			// Fallback: mouse wheel if no items found yet
-			page.Mouse().Wheel(0, float64(RandInt(400, 800)))
-			Sleep(800, 1500)
-			continue
-		}
-
-		// Move mouse slightly (like a human)
-		page.Mouse().Move(
-			float64(RandInt(200, 600)),
-			float64(RandInt(200, 500)),
-		)
-
-		// Scroll to item near the bottom of visible list (same as scraper_tt: min(count-1, 10))
-		index := count - 1
-		if index > 10 {
-			index = 10
-		}
-		item := locator.Nth(index)
-		if err := item.ScrollIntoViewIfNeeded(playwright.LocatorScrollIntoViewIfNeededOptions{
-			Timeout: playwright.Float(3000),
-		}); err != nil {
-			// Fallback to mouse wheel
-			page.Mouse().Wheel(0, float64(RandInt(400, 800)))
-		}
+		// Scroll ~80-95% of viewport height per scroll (near full screen)
+		page.Evaluate(`() => {
+			const vh = window.innerHeight;
+			const amount = Math.floor(vh * (0.80 + Math.random() * 0.15));
+			window.scrollBy({ top: amount, behavior: 'smooth' });
+		}`)
 
 		Sleep(1200, 2000)
 
-		// 15% chance: scroll back up slightly (human behavior - re-read something)
+		// 15% chance: scroll back up slightly
 		if rand.Float64() < 0.15 {
-			page.Mouse().Wheel(0, float64(-RandInt(80, 180)))
+			page.Evaluate(`() => {
+				const vh = window.innerHeight;
+				window.scrollBy({ top: -Math.floor(vh * 0.2), behavior: 'smooth' });
+			}`)
 			Sleep(500, 1000)
 		}
 
-		// 10% chance: long pause (user got distracted)
+		// 10% chance: long pause
 		if rand.Float64() < 0.1 {
 			Sleep(3000, 6000)
 		}
