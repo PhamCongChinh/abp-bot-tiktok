@@ -9,6 +9,7 @@ import (
 	"abp-bot-tiktok/pkg/config"
 	"abp-bot-tiktok/pkg/gpm"
 	"fmt"
+	"math/rand"
 	"net/url"
 	"sync"
 	"time"
@@ -44,10 +45,17 @@ func (c *Crawler) Run() {
 		return
 	}
 
-	numProfiles := len(c.cfg.ProfileIDs)
-	chunks := splitKeywords(c.cfg.Keywords, numProfiles)
+	// Shuffle keywords each cycle for randomized crawl order
+	keywords := make([]string, len(c.cfg.Keywords))
+	copy(keywords, c.cfg.Keywords)
+	rand.Shuffle(len(keywords), func(i, j int) {
+		keywords[i], keywords[j] = keywords[j], keywords[i]
+	})
 
-	c.log.Sugar().Infof("Crawl started | %d profiles | %d keywords total", numProfiles, len(c.cfg.Keywords))
+	numProfiles := len(c.cfg.ProfileIDs)
+	chunks := splitKeywords(keywords, numProfiles)
+
+	c.log.Sugar().Infof("Crawl started | %d profiles | %d keywords total", numProfiles, len(keywords))
 	for i, chunk := range chunks {
 		c.log.Sugar().Infof("  [P%d|%s...] %d keywords", i+1, c.cfg.ProfileIDs[i][:8], len(chunk))
 	}

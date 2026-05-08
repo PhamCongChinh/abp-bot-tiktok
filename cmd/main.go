@@ -64,7 +64,7 @@ func main() {
 		return
 	}
 
-	// Set keywords to config (will be reused for all crawl cycles)
+	// Set keywords to config (will be reused for all crawl cycles, shuffled each cycle in Run())
 	cfg.Keywords = keywordList
 
 	// Init crawler
