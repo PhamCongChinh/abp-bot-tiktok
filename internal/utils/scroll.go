@@ -21,20 +21,20 @@ func HumanScroll(page playwright.Page, times int) error {
 		wheelDelta := RandInt(700, 900)
 		page.Mouse().Wheel(0, float64(wheelDelta))
 
-		Sleep(1500, 2500)
+		Sleep(800, 1500) // wait for content to load
 
 		// 15% chance: scroll back up slightly
 		if rand.Float64() < 0.15 {
 			page.Mouse().Wheel(0, float64(-RandInt(150, 200)))
-			Sleep(500, 1000)
+			Sleep(300, 600)
 		}
 
 		// 10% chance: long pause
 		if rand.Float64() < 0.1 {
-			Sleep(3000, 6000)
+			Sleep(2000, 4000)
 		}
 
-		Sleep(800, 1500)
+		Sleep(500, 1000)
 	}
 
 	return nil
