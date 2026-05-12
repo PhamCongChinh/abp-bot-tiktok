@@ -62,10 +62,10 @@ func Load() *Config {
 		UseGPM:          gpmAPI != "" && len(profileIDs) > 0,
 		BatchMin:        getEnvInt("BATCH_MIN", 5),
 		BatchMax:        getEnvInt("BATCH_MAX", 10),
-		SleepMinKeyword: getEnvInt("SLEEP_MIN_KEYWORD", 45),  // 45 seconds
-		SleepMaxKeyword: getEnvInt("SLEEP_MAX_KEYWORD", 75),  // 1 minute 15 seconds
-		RestMinSession:  getEnvInt("REST_MIN_SESSION", 120),  // 2 minutes
-		RestMaxSession:  getEnvInt("REST_MAX_SESSION", 240),  // 4 minutes
+		SleepMinKeyword: getEnvInt("SLEEP_MIN_KEYWORD", 60),  // 1 minute
+		SleepMaxKeyword: getEnvInt("SLEEP_MAX_KEYWORD", 90),  // 1 minute 30 seconds
+		RestMinSession:  getEnvInt("REST_MIN_SESSION", 180),  // 3 minutes
+		RestMaxSession:  getEnvInt("REST_MAX_SESSION", 300),  // 5 minutes
 	}
 }
 
