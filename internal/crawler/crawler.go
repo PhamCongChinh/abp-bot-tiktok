@@ -296,16 +296,35 @@ func (c *Crawler) crawlKeyword(page playwright.Page, keyword string, log *zap.Lo
 
 	encoded := url.QueryEscape(keyword)
 	ts := time.Now().UnixMilli()
-	searchURL := fmt.Sprintf("%s/search/video?q=%s&t=%d", tiktokURL, encoded, ts)
 
-	if _, err := page.Goto(searchURL, playwright.PageGotoOptions{
+	// Navigate to Top tab first
+	topURL := fmt.Sprintf("%s/search?q=%s&t=%d", tiktokURL, encoded, ts)
+	if _, err := page.Goto(topURL, playwright.PageGotoOptions{
 		WaitUntil: playwright.WaitUntilStateDomcontentloaded,
 		Timeout:   playwright.Float(30000),
 	}); err != nil {
 		log.Sugar().Warnf("%s Search navigate failed: %v", tag, err)
 		return
 	}
-	utils.Sleep(6000, 9000)
+	utils.Sleep(3000, 5000)
+
+	// Check if Top tab has videos, if not switch to Video tab
+	hasVideos, _ := page.Evaluate(`() => {
+		const items = document.querySelectorAll('[data-e2e="search-common-video"], [class*="DivItemContainer"]');
+		return items.length > 0;
+	}`)
+	if hasVideos == nil || hasVideos == false {
+		log.Sugar().Infof("%s   Top tab empty, switching to Video tab...", tag)
+		videoURL := fmt.Sprintf("%s/search/video?q=%s&t=%d", tiktokURL, encoded, ts)
+		if _, err := page.Goto(videoURL, playwright.PageGotoOptions{
+			WaitUntil: playwright.WaitUntilStateDomcontentloaded,
+			Timeout:   playwright.Float(30000),
+		}); err != nil {
+			log.Sugar().Warnf("%s Video tab navigate failed: %v", tag, err)
+			return
+		}
+		utils.Sleep(4000, 6000)
+	}
 	
 	// Scroll to load more videos
 	scrollTimes := utils.RandInt(5, 10)
