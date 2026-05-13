@@ -253,12 +253,23 @@ func (c *Crawler) crawlKeyword(page playwright.Page, keyword string, log *zap.Lo
 		go func(res playwright.Response) {
 			var body map[string]any
 			if err := res.JSON(&body); err != nil || body == nil {
+				log.Sugar().Warnf("%s   API response parse error: %v | url: %s", tag, err, res.URL())
 				return
 			}
-			if statusCode, ok := body["status_code"].(float64); !ok || statusCode != 0 {
-				return
-			}
+			statusCode, _ := body["status_code"].(float64)
 			items, _ := body["item_list"].([]any)
+			log.Sugar().Infof("%s   API hit: status=%v items=%d", tag, statusCode, len(items))
+
+			// Detect rate limit / captcha
+			if statusCode == 2061 || statusCode == 10000 || statusCode == -1 {
+				log.Sugar().Warnf("%s   ⚠️ Rate limited (status=%v), sleeping 5 minutes...", tag, statusCode)
+				time.Sleep(5 * time.Minute)
+				return
+			}
+
+			if statusCode != 0 {
+				return
+			}
 
 			mu.Lock()
 			defer mu.Unlock()
