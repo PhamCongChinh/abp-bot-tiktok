@@ -191,7 +191,8 @@ func (c *Crawler) crawlSearch(context playwright.BrowserContext, keywords []stri
 		log.Sugar().Infof("%s Session | %d keywords in batch", tag, len(batch))
 
 		for keywordIdx, keyword := range batch {
-			log.Sugar().Infof("%s [%d/%d] Searching: %q", tag, i+keywordIdx+1, total, keyword)
+			orgID := c.cfg.KeywordOrgMap[keyword]
+			log.Sugar().Infof("%s [%d/%d] org=%d %q", tag, i+keywordIdx+1, total, orgID, keyword)
 
 			page, err := c.createPageWithRetry(context, 3, log)
 			if err != nil {
@@ -350,7 +351,8 @@ func (c *Crawler) crawlKeyword(page playwright.Page, keyword string, log *zap.Lo
 	items := collectedItems
 	mu.Unlock()
 
-	results := c.parseVideos(keyword, items)
+	orgID := c.cfg.KeywordOrgMap[keyword]
+	results := c.parseVideos(keyword, orgID, items)
 	
 	// Tính thời gian crawl
 	duration := time.Since(startTime)
@@ -363,7 +365,7 @@ func (c *Crawler) crawlKeyword(page playwright.Page, keyword string, log *zap.Lo
 	}
 }
 
-func (c *Crawler) parseVideos(keyword string, items []map[string]any) []models.VideoItem {
+func (c *Crawler) parseVideos(keyword string, orgID int, items []map[string]any) []models.VideoItem {
 	nowTs := time.Now().Unix()
 	cutoff := nowTs - sevenDays
 	var results []models.VideoItem
@@ -378,6 +380,7 @@ func (c *Crawler) parseVideos(keyword string, items []map[string]any) []models.V
 
 		results = append(results, models.VideoItem{
 			Keyword:     keyword,
+			OrgID:       orgID,
 			VideoID:     toString(item["id"]),
 			Description: toString(item["desc"]),
 			PubTime:     pubTime,

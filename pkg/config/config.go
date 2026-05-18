@@ -23,7 +23,8 @@ type Config struct {
 	ProfileIDs []string // Multiple profile IDs separated by comma
 	UseGPM     bool
 	// Keywords (loaded from MongoDB or .env)
-	Keywords []string
+	Keywords      []string
+	KeywordOrgMap map[string]int // keyword -> org_id
 	// Batch settings
 	BatchMin int
 	BatchMax int

@@ -46,11 +46,13 @@ func main() {
 		zap.Ints("org_ids", cfg.OrgIDs),
 	)
 
-	// Build keyword list and group by org_id
+	// Build keyword list, org map, and group by org_id
 	orgKeywordCount := make(map[int]int)
 	var keywordList []string
+	keywordOrgMap := make(map[string]int)
 	for _, kw := range keywords {
 		keywordList = append(keywordList, kw.Keyword)
+		keywordOrgMap[kw.Keyword] = kw.OrgID
 		orgKeywordCount[kw.OrgID]++
 	}
 
@@ -65,6 +67,8 @@ func main() {
 	}
 
 	// Set keywords to config (will be reused for all crawl cycles, shuffled each cycle in Run())
+	cfg.Keywords = keywordList
+	cfg.KeywordOrgMap = keywordOrgMap
 	cfg.Keywords = keywordList
 
 	// Init crawler
