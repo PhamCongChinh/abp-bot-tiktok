@@ -21,7 +21,7 @@ import (
 const (
 	tiktokURL = "https://www.tiktok.com"
 	searchAPI = "/api/search/item/full/"
-	sevenDays = 7 * 24 * 60 * 60
+	oneMonth = 30 * 24 * 60 * 60
 )
 
 type Crawler struct {
@@ -367,7 +367,7 @@ func (c *Crawler) crawlKeyword(page playwright.Page, keyword string, log *zap.Lo
 
 func (c *Crawler) parseVideos(keyword string, orgID int, items []map[string]any) []models.VideoItem {
 	nowTs := time.Now().Unix()
-	cutoff := nowTs - sevenDays
+	cutoff := nowTs - oneMonth
 	var results []models.VideoItem
 
 	for _, item := range items {
