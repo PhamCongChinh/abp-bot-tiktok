@@ -21,7 +21,7 @@ import (
 const (
 	tiktokURL = "https://www.tiktok.com"
 	searchAPI = "/api/search/item/full/"
-	oneMonth = 30 * 24 * 60 * 60
+	oneMonth = 90 * 24 * 60 * 60
 )
 
 type Crawler struct {
