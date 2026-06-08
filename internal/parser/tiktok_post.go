@@ -79,7 +79,7 @@ func FromVideoItem(v models.VideoItem) TiktokPost {
 		AuthName:        v.AuthName,
 		AuthType:        authType,
 		AuthURL:         authorURL,
-		SourceID:        v.VideoID,
+		SourceID:        v.AuthID,
 		SourceType:      sourceType,
 		SourceName:      v.AuthName,
 		SourceURL:       videoURL,
