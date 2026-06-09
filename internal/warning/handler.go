@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"abp-bot-tiktok/internal/utils"
 	"abp-bot-tiktok/pkg/config"
 	"abp-bot-tiktok/pkg/gpm"
 
@@ -128,5 +129,20 @@ func (h *Handler) gotoURL(profileID, targetURL string) error {
 	}
 
 	h.log.Sugar().Infof("[warning] navigated to %s", targetURL)
+
+	// Scroll 10-15 times, 1-3s between each scroll
+	scrollTimes := utils.RandInt(10, 15)
+	h.log.Sugar().Infof("[warning] scrolling %d times...", scrollTimes)
+	for i := 0; i < scrollTimes; i++ {
+		page.Mouse().Move(
+			float64(utils.RandInt(300, 700)),
+			float64(utils.RandInt(200, 500)),
+		)
+		page.Mouse().Wheel(0, float64(utils.RandInt(600, 900)))
+		h.log.Sugar().Infof("[warning] scroll %d/%d", i+1, scrollTimes)
+		utils.Sleep(1000, 3000)
+	}
+
+	h.log.Sugar().Infof("[warning] done scrolling")
 	return nil
 }
