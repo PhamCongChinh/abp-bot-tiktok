@@ -1,6 +1,7 @@
 package warning
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"sync"
@@ -9,7 +10,7 @@ import (
 	"abp-bot-tiktok/internal/models"
 	"abp-bot-tiktok/internal/parser"
 	"abp-bot-tiktok/internal/utils"
-	"abp-bot-tiktok/pkg/api"
+	kafkapkg "abp-bot-tiktok/pkg/kafka"
 	"abp-bot-tiktok/pkg/config"
 	"abp-bot-tiktok/pkg/gpm"
 
@@ -18,9 +19,10 @@ import (
 )
 
 const (
-	oneMonth   = 90 * 24 * 60 * 60
-	profileAPI = "/api/post/item_list/"
-	searchAPI  = "/api/search/item/full/"
+	oneMonth        = 90 * 24 * 60 * 60
+	profileAPI      = "/api/post/item_list/"
+	searchAPI       = "/api/search/item/full/"
+	outputTopic     = "abp-manual-message-orchestrator"
 )
 
 // Message matches the PostEntity payload published to manual.warnings.{source}.
@@ -65,10 +67,10 @@ type Message struct {
 }
 
 type Handler struct {
-	cfg       *config.Config
-	log       *zap.Logger
-	pw        *playwright.Playwright
-	apiClient *api.Client
+	cfg      *config.Config
+	log      *zap.Logger
+	pw       *playwright.Playwright
+	producer *kafkapkg.Producer
 }
 
 func NewHandler(cfg *config.Config, log *zap.Logger) (*Handler, error) {
@@ -76,15 +78,13 @@ func NewHandler(cfg *config.Config, log *zap.Logger) (*Handler, error) {
 	if err != nil {
 		return nil, fmt.Errorf("playwright start: %w", err)
 	}
-	var apiClient *api.Client
-	if cfg.APIURL != "" {
-		apiClient = api.NewClient(cfg.APIURL, log)
-	}
-	return &Handler{cfg: cfg, log: log, pw: pw, apiClient: apiClient}, nil
+	producer := kafkapkg.NewProducer(cfg.KafkaBrokers, outputTopic, log)
+	return &Handler{cfg: cfg, log: log, pw: pw, producer: producer}, nil
 }
 
 func (h *Handler) Close() {
 	h.pw.Stop()
+	h.producer.Close()
 }
 
 func (h *Handler) Handle(data []byte) error {
@@ -103,16 +103,20 @@ func (h *Handler) Handle(data []byte) error {
 		profileID = h.cfg.ProfileIDs[0]
 	}
 	if profileID == "" {
-		return fmt.Errorf("[warning] no GPM profile ID available")
+		return h.publishFailed(msg, "no GPM profile ID available")
 	}
 
-	h.log.Sugar().Infof("[warning] id=%s source=%s org_id=%d auth=%s sentiment=%d priority=%v link=%s",
-		msg.ID, msg.Source, msg.OrgID, msg.AuthName, msg.Sentiment, msg.IsPriority, msg.Link)
-	return h.gotoURL(profileID, msg.Link, msg.OrgID)
+	h.log.Sugar().Infof("[warning] id=%s source=%s org_id=%d auth=%s link=%s",
+		msg.ID, msg.Source, msg.OrgID, msg.AuthName, msg.Link)
+
+	if err := h.gotoURL(profileID, msg); err != nil {
+		return h.publishFailed(msg, err.Error())
+	}
+	return nil
 }
 
-// gotoURL opens GPM, navigates to targetURL, scrolls to collect videos, then pushes to API.
-func (h *Handler) gotoURL(profileID, targetURL string, orgID int) error {
+// gotoURL opens GPM, navigates, scrolls to collect videos, then produces to Kafka.
+func (h *Handler) gotoURL(profileID string, msg Message) error {
 	gpmClient := gpm.NewClient(h.cfg.GPMAPI, h.log)
 
 	wsURL, err := gpmClient.StartProfile(profileID)
@@ -149,7 +153,6 @@ func (h *Handler) gotoURL(profileID, targetURL string, orgID int) error {
 			if err := res.JSON(&body); err != nil || body == nil {
 				return
 			}
-
 			// Profile API returns "itemList", search API returns "item_list"
 			var rawItems []any
 			if v, ok := body["itemList"].([]any); ok {
@@ -157,12 +160,10 @@ func (h *Handler) gotoURL(profileID, targetURL string, orgID int) error {
 			} else if v, ok := body["item_list"].([]any); ok {
 				rawItems = v
 			}
-
 			if len(rawItems) == 0 {
 				return
 			}
-
-			h.log.Sugar().Infof("[warning] API hit: %s items=%d", url, len(rawItems))
+			h.log.Sugar().Infof("[warning] API hit %s items=%d", url, len(rawItems))
 
 			mu.Lock()
 			defer mu.Unlock()
@@ -187,13 +188,13 @@ func (h *Handler) gotoURL(profileID, targetURL string, orgID int) error {
 		}(res)
 	})
 
-	if _, err := page.Goto(targetURL, playwright.PageGotoOptions{
+	if _, err := page.Goto(msg.Link, playwright.PageGotoOptions{
 		WaitUntil: playwright.WaitUntilStateDomcontentloaded,
 		Timeout:   playwright.Float(30000),
 	}); err != nil {
-		return fmt.Errorf("goto %s: %w", targetURL, err)
+		return fmt.Errorf("goto timeout/blocked: %w", err)
 	}
-	h.log.Sugar().Infof("[warning] navigated to %s", targetURL)
+	h.log.Sugar().Infof("[warning] navigated to %s", msg.Link)
 
 	// Scroll 10-15 times, 1-3s between each scroll
 	scrollTimes := utils.RandInt(10, 15)
@@ -214,19 +215,27 @@ func (h *Handler) gotoURL(profileID, targetURL string, orgID int) error {
 
 	h.log.Sugar().Infof("[warning] collected %d items", len(items))
 
-	if len(items) > 0 && h.apiClient != nil {
-		posts := h.parseAndPush(items, orgID)
-		if err := h.apiClient.PostUnclassified(posts); err != nil {
-			h.log.Sugar().Errorf("[warning] push to API failed: %v", err)
-		} else {
-			h.log.Sugar().Infof("[warning] pushed %d posts to API", len(posts))
+	posts := h.parseItems(items, msg.OrgID)
+	ctx := context.Background()
+	for _, post := range posts {
+		if err := h.producer.Publish(ctx, post.SubjectID, post); err != nil {
+			h.log.Sugar().Errorf("[warning] produce failed for %s: %v", post.SubjectID, err)
 		}
 	}
+	h.log.Sugar().Infof("[warning] produced %d posts to %s", len(posts), outputTopic)
 
 	return nil
 }
 
-func (h *Handler) parseAndPush(items []map[string]any, orgID int) []parser.TiktokPost {
+// publishFailed produces the original message back with status=FAILED.
+func (h *Handler) publishFailed(msg Message, reason string) error {
+	msg.Status = "FAILED"
+	msg.ErrorMessage = &reason
+	h.log.Sugar().Errorf("[warning] FAILED id=%s reason=%s", msg.ID, reason)
+	return h.producer.Publish(context.Background(), msg.ID, msg)
+}
+
+func (h *Handler) parseItems(items []map[string]any, orgID int) []parser.TiktokPost {
 	nowTs := time.Now().Unix()
 	cutoff := nowTs - oneMonth
 	var posts []parser.TiktokPost
