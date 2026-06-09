@@ -19,9 +19,13 @@ type Config struct {
 	// API endpoint to push data
 	APIURL string
 	// GPM (GoLogin Profile Manager) - support multiple profiles
-	GPMAPI     string
-	ProfileIDs []string // Multiple profile IDs separated by comma
-	UseGPM     bool
+	GPMAPI           string
+	ProfileIDs       []string // Multiple profile IDs separated by comma
+	UseGPM           bool
+	WarningProfileID string // Dedicated profile for warning handler (optional)
+	// Kafka
+	KafkaBrokers []string
+	KafkaGroupID string
 	// Keywords (loaded from MongoDB or .env)
 	Keywords      []string
 	KeywordOrgMap map[string]int // keyword -> org_id
@@ -49,6 +53,8 @@ func Load() *Config {
 	// Parse ORG_IDS (comma-separated integers)
 	orgIDs := parseIntSlice(getEnv("ORG_IDS", ""), []int{2})
 
+	kafkaBrokers := splitEnv("KAFKA_BROKERS", []string{})
+
 	return &Config{
 		LogLevel:        getEnv("LOG_LEVEL", "info"),
 		OutputDir:       getEnv("OUTPUT_DIR", "./data"),
@@ -61,12 +67,15 @@ func Load() *Config {
 		GPMAPI:          gpmAPI,
 		ProfileIDs:      profileIDs,
 		UseGPM:          gpmAPI != "" && len(profileIDs) > 0,
+		WarningProfileID: getEnv("WARNING_PROFILE_ID", ""),
+		KafkaBrokers:    kafkaBrokers,
+		KafkaGroupID:    getEnv("KAFKA_GROUP_ID", "abp-bot-tiktok"),
 		BatchMin:        getEnvInt("BATCH_MIN", 5),
 		BatchMax:        getEnvInt("BATCH_MAX", 10),
-		SleepMinKeyword: getEnvInt("SLEEP_MIN_KEYWORD", 60),  // 1 minute
-		SleepMaxKeyword: getEnvInt("SLEEP_MAX_KEYWORD", 90),  // 1 minute 30 seconds
-		RestMinSession:  getEnvInt("REST_MIN_SESSION", 180),  // 3 minutes
-		RestMaxSession:  getEnvInt("REST_MAX_SESSION", 300),  // 5 minutes
+		SleepMinKeyword: getEnvInt("SLEEP_MIN_KEYWORD", 60),
+		SleepMaxKeyword: getEnvInt("SLEEP_MAX_KEYWORD", 90),
+		RestMinSession:  getEnvInt("REST_MIN_SESSION", 180),
+		RestMaxSession:  getEnvInt("REST_MAX_SESSION", 300),
 	}
 }
 

@@ -1,15 +1,19 @@
 package main
 
 import (
-	"abp-bot-tiktok/internal/crawler"
-	"abp-bot-tiktok/internal/repository"
-	"abp-bot-tiktok/internal/scheduler"
-	"abp-bot-tiktok/pkg/config"
-	"abp-bot-tiktok/pkg/database"
-	"abp-bot-tiktok/pkg/logger"
+	"context"
 	"os"
 	"os/signal"
 	"syscall"
+
+	"abp-bot-tiktok/internal/crawler"
+	"abp-bot-tiktok/internal/repository"
+	"abp-bot-tiktok/internal/scheduler"
+	"abp-bot-tiktok/internal/warning"
+	"abp-bot-tiktok/pkg/config"
+	"abp-bot-tiktok/pkg/database"
+	kafkaconsumer "abp-bot-tiktok/pkg/kafka"
+	"abp-bot-tiktok/pkg/logger"
 
 	"go.uber.org/zap"
 )
@@ -30,7 +34,6 @@ func main() {
 	defer mongoDB.Close()
 
 	// Init repositories
-	// videoRepo := repository.NewVideoRepository(mongoDB.Database(), log)
 	keywordRepo := repository.NewKeywordRepository(mongoDB.Database(), log)
 
 	// Load keywords from MongoDB by org_ids from .env
@@ -61,41 +64,57 @@ func main() {
 		log.Info("", zap.Int("org_id", orgID), zap.Int("keywords", count))
 	}
 
-	if len(keywordList) == 0 {
-		log.Warn("No keywords found for org_ids, exiting", zap.Ints("org_ids", cfg.OrgIDs))
-		return
-	}
-
-	// Set keywords to config (will be reused for all crawl cycles, shuffled each cycle in Run())
 	cfg.Keywords = keywordList
 	cfg.KeywordOrgMap = keywordOrgMap
-	cfg.Keywords = keywordList
 
-	// Init crawler
-	c := crawler.New(cfg, log, nil)
-	
-	log.Info("Crawler initialized - will crawl same keywords every 1-1.5 hours")
-	
-	runCrawler(cfg, log, c)
-}
+	// Graceful shutdown context
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-func runCrawler(cfg *config.Config, log *zap.Logger, c *crawler.Crawler) {
+	// Always start Kafka consumer for manual warnings
+	if len(cfg.KafkaBrokers) > 0 {
+		warningHandler, err := warning.NewHandler(cfg, log)
+		if err != nil {
+			log.Fatal("Failed to init warning handler", zap.Error(err))
+		}
+		defer warningHandler.Close()
 
-	if cfg.Debug {
-		// Chạy thẳng, không cần cron
-		log.Info("DEBUG mode: running crawler immediately")
-		c.Run()
-		log.Info("Done.")
-		return
+		consumer := kafkaconsumer.NewConsumer(cfg.KafkaBrokers, "manual.warnings.tiktok", cfg.KafkaGroupID, log)
+		defer consumer.Close()
+
+		go consumer.Consume(ctx, warningHandler.Handle)
+		log.Info("Kafka consumer started", zap.String("topic", "manual.warnings.tiktok"), zap.Strings("brokers", cfg.KafkaBrokers))
+	} else {
+		log.Warn("KAFKA_BROKERS not set — warning consumer disabled")
 	}
 
-	// Production: dùng scheduler
-	s := scheduler.New(cfg, log, c)
-	s.Start()
-	defer s.Stop()
+	// Run crawler (keywords must be loaded)
+	if len(keywordList) == 0 {
+		log.Warn("No keywords found for org_ids", zap.Ints("org_ids", cfg.OrgIDs))
+	} else {
+		c := crawler.New(cfg, log, nil)
+		log.Info("Crawler initialized - will crawl same keywords every 1-1.5 hours")
+		go runCrawler(cfg, log, c)
+	}
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 	log.Info("Shutting down...")
+}
+
+func runCrawler(cfg *config.Config, log *zap.Logger, c *crawler.Crawler) {
+	if cfg.Debug {
+		log.Info("DEBUG mode: running crawler immediately")
+		c.Run()
+		log.Info("Crawler done.")
+		return
+	}
+
+	s := scheduler.New(cfg, log, c)
+	s.Start()
+	defer s.Stop()
+
+	// block until process exits (main goroutine handles signal)
+	select {}
 }
