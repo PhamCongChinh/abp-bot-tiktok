@@ -11,12 +11,45 @@ import (
 	"go.uber.org/zap"
 )
 
-// Message is the payload published to manual.warnings.{source} by the ABP Telegram Bot.
-// Format sent by users: link=<url> source=<SOURCE> orgId=<id>
+// Message matches the PostEntity payload published to manual.warnings.{source}.
 type Message struct {
-	Link   string `json:"link"`
-	Source string `json:"source"`
-	OrgID  int    `json:"orgId"`
+	ID              string  `json:"id"`
+	DocType         int     `json:"doc_type"`
+	SourceType      int     `json:"source_type"`
+	CrawlSource     int     `json:"crawl_source"`
+	CrawlSourceCode string  `json:"crawl_source_code"`
+	PubTime         int64   `json:"pub_time"`
+	CrawlTime       int64   `json:"crawl_time"`
+	OrgID           int     `json:"org_id"`
+	SubjectID       string  `json:"subject_id"`
+	Title           string  `json:"title"`
+	Description     string  `json:"description"`
+	Content         string  `json:"content"`
+	URL             string  `json:"url"`
+	MediaURLs       string  `json:"media_urls"`
+	Comments        int64   `json:"comments"`
+	Shares          int64   `json:"shares"`
+	Reactions       int64   `json:"reactions"`
+	Favors          int64   `json:"favors"`
+	Views           int64   `json:"views"`
+	WebTags         string  `json:"web_tags"`
+	WebKeywords     string  `json:"web_keywords"`
+	AuthID          string  `json:"auth_id"`
+	AuthName        string  `json:"auth_name"`
+	AuthType        int     `json:"auth_type"`
+	AuthURL         string  `json:"auth_url"`
+	SourceID        string  `json:"source_id"`
+	SourceName      string  `json:"source_name"`
+	SourceURL       string  `json:"source_url"`
+	ReplyTo         *string `json:"reply_to"`
+	Level           int     `json:"level"`
+	Sentiment       int     `json:"sentiment"`
+	IsPriority      bool    `json:"isPriority"`
+	CrawlBot        string  `json:"crawl_bot"`
+	Link            string  `json:"link"`
+	Source          string  `json:"source"`
+	Status          string  `json:"status"`
+	ErrorMessage    *string `json:"error_message"`
 }
 
 type Handler struct {
@@ -57,7 +90,8 @@ func (h *Handler) Handle(data []byte) error {
 		return fmt.Errorf("[warning] no GPM profile ID available")
 	}
 
-	h.log.Sugar().Infof("[warning] source=%s orgId=%d profile=%s link=%s", msg.Source, msg.OrgID, profileID[:8], msg.Link)
+	h.log.Sugar().Infof("[warning] id=%s source=%s org_id=%d auth=%s sentiment=%d priority=%v link=%s",
+		msg.ID, msg.Source, msg.OrgID, msg.AuthName, msg.Sentiment, msg.IsPriority, msg.Link)
 	return h.gotoURL(profileID, msg.Link)
 }
 
