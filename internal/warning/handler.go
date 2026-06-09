@@ -223,19 +223,10 @@ func (h *Handler) gotoURL(profileID string, msg Message) error {
 
 	posts := h.parseItems(items, msg.OrgID)
 
-	// Log chi tiết từng post crawl được
+	// Log từng post theo đúng cấu trúc PostEntity
 	for i, post := range posts {
-		h.log.Sugar().Infof("[warning] [%d/%d] id=%s author=@%s views=%d likes=%d comments=%d shares=%d desc=%q url=%s",
-			i+1, len(posts),
-			post.SubjectID,
-			post.AuthName,
-			post.Views,
-			post.Reactions,
-			post.Comments,
-			post.Shares,
-			truncate(post.Description, 80),
-			post.URL,
-		)
+		data, _ := json.MarshalIndent(post, "", "  ")
+		h.log.Sugar().Infof("[warning] post [%d/%d]:\n%s", i+1, len(posts), string(data))
 	}
 
 	ctx := context.Background()
