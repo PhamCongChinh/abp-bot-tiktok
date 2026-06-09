@@ -19,10 +19,11 @@ import (
 )
 
 const (
-	oneMonth        = 90 * 24 * 60 * 60
-	profileAPI      = "/api/post/item_list/"
-	searchAPI       = "/api/search/item/full/"
-	outputTopic     = "abp-manual-message-orchestrator"
+	oneMonth      = 90 * 24 * 60 * 60
+	profileAPI    = "/api/post/item_list/"
+	searchAPI     = "/api/search/item/full/"
+	videoDetailAPI = "/api/item/detail/"
+	outputTopic   = "abp-manual-message-orchestrator"
 )
 
 // Message matches the PostEntity payload published to manual.warnings.{source}.
@@ -145,7 +146,7 @@ func (h *Handler) gotoURL(profileID string, msg Message) error {
 
 	page.On("response", func(res playwright.Response) {
 		url := res.URL()
-		if !containsAny(url, []string{profileAPI, searchAPI}) {
+		if !containsAny(url, []string{profileAPI, searchAPI, videoDetailAPI}) {
 			return
 		}
 		go func(res playwright.Response) {
@@ -153,13 +154,29 @@ func (h *Handler) gotoURL(profileID string, msg Message) error {
 			if err := res.JSON(&body); err != nil || body == nil {
 				return
 			}
-			// Profile API returns "itemList", search API returns "item_list"
+
 			var rawItems []any
-			if v, ok := body["itemList"].([]any); ok {
-				rawItems = v
-			} else if v, ok := body["item_list"].([]any); ok {
-				rawItems = v
+
+			switch {
+			// Single video detail: /api/item/detail/
+			case containsAny(url, []string{videoDetailAPI}):
+				if info, ok := body["itemInfo"].(map[string]any); ok {
+					if item, ok := info["itemStruct"].(map[string]any); ok {
+						rawItems = []any{item}
+					}
+				}
+			// Profile list: /api/post/item_list/
+			case containsAny(url, []string{profileAPI}):
+				if v, ok := body["itemList"].([]any); ok {
+					rawItems = v
+				}
+			// Search: /api/search/item/full/
+			default:
+				if v, ok := body["item_list"].([]any); ok {
+					rawItems = v
+				}
 			}
+
 			if len(rawItems) == 0 {
 				return
 			}
@@ -216,6 +233,22 @@ func (h *Handler) gotoURL(profileID string, msg Message) error {
 	h.log.Sugar().Infof("[warning] collected %d items", len(items))
 
 	posts := h.parseItems(items, msg.OrgID)
+
+	// Log chi tiết từng post crawl được
+	for i, post := range posts {
+		h.log.Sugar().Infof("[warning] [%d/%d] id=%s author=@%s views=%d likes=%d comments=%d shares=%d desc=%q url=%s",
+			i+1, len(posts),
+			post.SubjectID,
+			post.AuthName,
+			post.Views,
+			post.Reactions,
+			post.Comments,
+			post.Shares,
+			truncate(post.Description, 80),
+			post.URL,
+		)
+	}
+
 	ctx := context.Background()
 	for _, post := range posts {
 		if err := h.producer.Publish(ctx, post.SubjectID, post); err != nil {
@@ -265,6 +298,13 @@ func (h *Handler) parseItems(items []map[string]any, orgID int) []parser.TiktokP
 		posts = append(posts, parser.FromVideoItem(v))
 	}
 	return posts
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
 }
 
 func containsAny(s string, subs []string) bool {
