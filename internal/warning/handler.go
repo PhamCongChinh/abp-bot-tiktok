@@ -10,9 +10,9 @@ import (
 	"abp-bot-tiktok/internal/models"
 	"abp-bot-tiktok/internal/parser"
 	"abp-bot-tiktok/internal/utils"
-	kafkapkg "abp-bot-tiktok/pkg/kafka"
 	"abp-bot-tiktok/pkg/config"
 	"abp-bot-tiktok/pkg/gpm"
+	kafkapkg "abp-bot-tiktok/pkg/kafka"
 
 	"github.com/playwright-community/playwright-go"
 	"go.uber.org/zap"
@@ -60,11 +60,12 @@ type Message struct {
 	Level           int     `json:"level"`
 	Sentiment       int     `json:"sentiment"`
 	IsPriority      bool    `json:"isPriority"`
-	CrawlBot        string  `json:"crawl_bot"`
-	Link            string  `json:"link"`
-	Source          string  `json:"source"`
-	Status          string  `json:"status"`
-	ErrorMessage    *string `json:"error_message"`
+	CrawlBot     string     `json:"crawl_bot"`
+	Link         string     `json:"link"`
+	Source       string     `json:"source"`
+	Status       string     `json:"status"`
+	ErrorMessage *string    `json:"error_message,omitempty"`
+	CrawledAt    *time.Time `json:"crawledAt,omitempty"`
 }
 
 type Handler struct {
@@ -212,19 +213,7 @@ func (h *Handler) gotoURL(profileID string, msg Message) error {
 		return fmt.Errorf("goto timeout/blocked: %w", err)
 	}
 	h.log.Sugar().Infof("[warning] navigated to %s", msg.Link)
-
-	// Scroll 10-15 times, 1-3s between each scroll
-	scrollTimes := utils.RandInt(10, 15)
-	h.log.Sugar().Infof("[warning] scrolling %d times...", scrollTimes)
-	for i := 0; i < scrollTimes; i++ {
-		page.Mouse().Move(
-			float64(utils.RandInt(300, 700)),
-			float64(utils.RandInt(200, 500)),
-		)
-		page.Mouse().Wheel(0, float64(utils.RandInt(600, 900)))
-		h.log.Sugar().Infof("[warning] scroll %d/%d", i+1, scrollTimes)
-		utils.Sleep(1000, 3000)
-	}
+	utils.Sleep(3000, 5000)
 
 	mu.Lock()
 	items := collectedItems
