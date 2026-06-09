@@ -3,13 +3,24 @@ package warning
 import (
 	"encoding/json"
 	"fmt"
+	"sync"
+	"time"
 
+	"abp-bot-tiktok/internal/models"
+	"abp-bot-tiktok/internal/parser"
 	"abp-bot-tiktok/internal/utils"
+	"abp-bot-tiktok/pkg/api"
 	"abp-bot-tiktok/pkg/config"
 	"abp-bot-tiktok/pkg/gpm"
 
 	"github.com/playwright-community/playwright-go"
 	"go.uber.org/zap"
+)
+
+const (
+	oneMonth   = 90 * 24 * 60 * 60
+	profileAPI = "/api/post/item_list/"
+	searchAPI  = "/api/search/item/full/"
 )
 
 // Message matches the PostEntity payload published to manual.warnings.{source}.
@@ -54,9 +65,10 @@ type Message struct {
 }
 
 type Handler struct {
-	cfg *config.Config
-	log *zap.Logger
-	pw  *playwright.Playwright
+	cfg       *config.Config
+	log       *zap.Logger
+	pw        *playwright.Playwright
+	apiClient *api.Client
 }
 
 func NewHandler(cfg *config.Config, log *zap.Logger) (*Handler, error) {
@@ -64,7 +76,11 @@ func NewHandler(cfg *config.Config, log *zap.Logger) (*Handler, error) {
 	if err != nil {
 		return nil, fmt.Errorf("playwright start: %w", err)
 	}
-	return &Handler{cfg: cfg, log: log, pw: pw}, nil
+	var apiClient *api.Client
+	if cfg.APIURL != "" {
+		apiClient = api.NewClient(cfg.APIURL, log)
+	}
+	return &Handler{cfg: cfg, log: log, pw: pw, apiClient: apiClient}, nil
 }
 
 func (h *Handler) Close() {
@@ -74,7 +90,6 @@ func (h *Handler) Close() {
 func (h *Handler) Handle(data []byte) error {
 	var msg Message
 	if err := json.Unmarshal(data, &msg); err != nil {
-		// treat raw value as plain URL
 		msg.Link = string(data)
 	}
 
@@ -93,12 +108,11 @@ func (h *Handler) Handle(data []byte) error {
 
 	h.log.Sugar().Infof("[warning] id=%s source=%s org_id=%d auth=%s sentiment=%d priority=%v link=%s",
 		msg.ID, msg.Source, msg.OrgID, msg.AuthName, msg.Sentiment, msg.IsPriority, msg.Link)
-	return h.gotoURL(profileID, msg.Link)
+	return h.gotoURL(profileID, msg.Link, msg.OrgID)
 }
 
-// gotoURL opens a GPM profile and navigates to targetURL.
-// The browser is intentionally left open for manual review.
-func (h *Handler) gotoURL(profileID, targetURL string) error {
+// gotoURL opens GPM, navigates to targetURL, scrolls to collect videos, then pushes to API.
+func (h *Handler) gotoURL(profileID, targetURL string, orgID int) error {
 	gpmClient := gpm.NewClient(h.cfg.GPMAPI, h.log)
 
 	wsURL, err := gpmClient.StartProfile(profileID)
@@ -121,13 +135,64 @@ func (h *Handler) gotoURL(profileID, targetURL string) error {
 		return fmt.Errorf("new page: %w", err)
 	}
 
+	// Intercept TikTok API responses to collect video items
+	var mu sync.Mutex
+	var collectedItems []map[string]any
+
+	page.On("response", func(res playwright.Response) {
+		url := res.URL()
+		if !containsAny(url, []string{profileAPI, searchAPI}) {
+			return
+		}
+		go func(res playwright.Response) {
+			var body map[string]any
+			if err := res.JSON(&body); err != nil || body == nil {
+				return
+			}
+
+			// Profile API returns "itemList", search API returns "item_list"
+			var rawItems []any
+			if v, ok := body["itemList"].([]any); ok {
+				rawItems = v
+			} else if v, ok := body["item_list"].([]any); ok {
+				rawItems = v
+			}
+
+			if len(rawItems) == 0 {
+				return
+			}
+
+			h.log.Sugar().Infof("[warning] API hit: %s items=%d", url, len(rawItems))
+
+			mu.Lock()
+			defer mu.Unlock()
+			seen := make(map[string]bool)
+			for _, existing := range collectedItems {
+				if id, ok := existing["id"].(string); ok {
+					seen[id] = true
+				}
+			}
+			for _, raw := range rawItems {
+				item, ok := raw.(map[string]any)
+				if !ok {
+					continue
+				}
+				id, _ := item["id"].(string)
+				if id == "" || seen[id] {
+					continue
+				}
+				seen[id] = true
+				collectedItems = append(collectedItems, item)
+			}
+		}(res)
+	})
+
 	if _, err := page.Goto(targetURL, playwright.PageGotoOptions{
 		WaitUntil: playwright.WaitUntilStateDomcontentloaded,
 		Timeout:   playwright.Float(30000),
 	}); err != nil {
 		return fmt.Errorf("goto %s: %w", targetURL, err)
 	}
-
 	h.log.Sugar().Infof("[warning] navigated to %s", targetURL)
 
 	// Scroll 10-15 times, 1-3s between each scroll
@@ -143,6 +208,90 @@ func (h *Handler) gotoURL(profileID, targetURL string) error {
 		utils.Sleep(1000, 3000)
 	}
 
-	h.log.Sugar().Infof("[warning] done scrolling")
+	mu.Lock()
+	items := collectedItems
+	mu.Unlock()
+
+	h.log.Sugar().Infof("[warning] collected %d items", len(items))
+
+	if len(items) > 0 && h.apiClient != nil {
+		posts := h.parseAndPush(items, orgID)
+		if err := h.apiClient.PostUnclassified(posts); err != nil {
+			h.log.Sugar().Errorf("[warning] push to API failed: %v", err)
+		} else {
+			h.log.Sugar().Infof("[warning] pushed %d posts to API", len(posts))
+		}
+	}
+
 	return nil
+}
+
+func (h *Handler) parseAndPush(items []map[string]any, orgID int) []parser.TiktokPost {
+	nowTs := time.Now().Unix()
+	cutoff := nowTs - oneMonth
+	var posts []parser.TiktokPost
+
+	for _, item := range items {
+		pubTime := int64(toFloat(item["createTime"]))
+		if pubTime > 0 && pubTime < cutoff {
+			continue
+		}
+		author, _ := item["author"].(map[string]any)
+		stats, _ := item["stats"].(map[string]any)
+
+		v := models.VideoItem{
+			OrgID:       orgID,
+			VideoID:     toString(item["id"]),
+			Description: toString(item["desc"]),
+			PubTime:     pubTime,
+			UniqueID:    toString(mapGet(author, "uniqueId")),
+			AuthID:      toString(mapGet(author, "id")),
+			AuthName:    toString(mapGet(author, "nickname")),
+			Comments:    int64(toFloat(mapGet(stats, "commentCount"))),
+			Shares:      int64(toFloat(mapGet(stats, "shareCount"))),
+			Reactions:   int64(toFloat(mapGet(stats, "diggCount"))),
+			Favors:      int64(toFloat(mapGet(stats, "collectCount"))),
+			Views:       int64(toFloat(mapGet(stats, "playCount"))),
+		}
+		posts = append(posts, parser.FromVideoItem(v))
+	}
+	return posts
+}
+
+func containsAny(s string, subs []string) bool {
+	for _, sub := range subs {
+		for i := 0; i <= len(s)-len(sub); i++ {
+			if s[i:i+len(sub)] == sub {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func toString(v any) string {
+	if v == nil {
+		return ""
+	}
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return fmt.Sprintf("%v", v)
+}
+
+func toFloat(v any) float64 {
+	if v == nil {
+		return 0
+	}
+	if f, ok := v.(float64); ok {
+		return f
+	}
+	return 0
+}
+
+func mapGet(m map[string]any, key string) any {
+	if m == nil {
+		return nil
+	}
+	return m[key]
 }
