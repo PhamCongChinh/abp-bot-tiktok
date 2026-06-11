@@ -339,7 +339,7 @@ func (c *Crawler) crawlKeyword(page playwright.Page, keyword string, log *zap.Lo
 	}
 	
 	// Scroll to load more videos
-	scrollTimes := utils.RandInt(15, 20)
+	scrollTimes := utils.RandInt(10, 15)
 	log.Sugar().Infof("%s   Scrolling %d times to load videos...", tag, scrollTimes)
 	_ = utils.HumanScroll(page, scrollTimes)
 	
