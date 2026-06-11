@@ -242,8 +242,17 @@ func (c *Crawler) createPageWithRetry(context playwright.BrowserContext, maxRetr
 }
 
 func (c *Crawler) crawlKeyword(page playwright.Page, keyword string, log *zap.Logger, tag string) {
-	startTime := time.Now() // Bắt đầu đếm thời gian
-	
+	startTime := time.Now()
+
+	page.Route("**/*", func(route playwright.Route) {
+		switch route.Request().ResourceType() {
+		case "stylesheet", "font", "image", "media", "other":
+			route.Abort()
+		default:
+			route.Continue()
+		}
+	})
+
 	var mu sync.Mutex
 	var collectedItems []map[string]any
 
