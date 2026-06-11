@@ -16,6 +16,9 @@ type Config struct {
 	MongoURI string
 	MongoDB  string
 	OrgIDs   []int // Support multiple org IDs
+	// Postgres
+	PostgresURI   string
+	ArticleTable  string
 	// API endpoint to push data
 	APIURL string
 	// GPM (GoLogin Profile Manager) - support multiple profiles
@@ -57,6 +60,8 @@ func Load() *Config {
 		MongoURI:        getEnv("MONGO_URI", "mongodb://localhost:27017"),
 		MongoDB:         getEnv("MONGO_DB", "tiktok_crawler"),
 		OrgIDs:          orgIDs,
+		PostgresURI:     getEnv("POSTGRES_URI", ""),
+		ArticleTable:    getEnv("ARTICLE_TABLE", "posts"),
 		APIURL:          getEnv("API_URL", ""),
 		GPMAPI:          gpmAPI,
 		ProfileIDs:      profileIDs,

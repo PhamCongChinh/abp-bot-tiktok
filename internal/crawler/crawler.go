@@ -25,10 +25,11 @@ const (
 )
 
 type Crawler struct {
-	cfg       *config.Config
-	log       *zap.Logger
-	videoRepo *repository.VideoRepository
-	apiClient *api.Client
+	cfg         *config.Config
+	log         *zap.Logger
+	videoRepo   *repository.VideoRepository
+	articleRepo *repository.ArticleRepository
+	apiClient   *api.Client
 }
 
 func New(cfg *config.Config, log *zap.Logger, videoRepo *repository.VideoRepository) *Crawler {
@@ -37,6 +38,10 @@ func New(cfg *config.Config, log *zap.Logger, videoRepo *repository.VideoReposit
 		apiClient = api.NewClient(cfg.APIURL, log)
 	}
 	return &Crawler{cfg: cfg, log: log, videoRepo: videoRepo, apiClient: apiClient}
+}
+
+func (c *Crawler) SetArticleRepo(repo *repository.ArticleRepository) {
+	c.articleRepo = repo
 }
 
 func (c *Crawler) Run() {
@@ -206,6 +211,7 @@ func (c *Crawler) crawlSearch(context playwright.BrowserContext, keywords []stri
 			if keywordIdx < len(batch)-1 {
 				sleepSec := utils.RandInt(c.cfg.SleepMinKeyword, c.cfg.SleepMaxKeyword)
 				log.Sugar().Infof("%s Sleep %ds before next keyword", tag, sleepSec)
+				c.fetchAndLogArticles(log, tag)
 				time.Sleep(time.Duration(sleepSec) * time.Second)
 			}
 		}
@@ -398,6 +404,10 @@ func (c *Crawler) parseVideos(keyword string, orgID int, items []map[string]any)
 }
 
 func (c *Crawler) pushToAPI(keyword string, videos []models.VideoItem, log *zap.Logger, tag string) {
+	if c.apiClient == nil {
+		log.Sugar().Infof("%s   %q -> no API_URL configured, skipping push", tag, keyword)
+		return
+	}
 	var posts []parser.TiktokPost
 	for _, v := range videos {
 		posts = append(posts, parser.FromVideoItem(v))
@@ -407,7 +417,65 @@ func (c *Crawler) pushToAPI(keyword string, videos []models.VideoItem, log *zap.
 		log.Sugar().Errorf("%s   %q -> push to %s failed: %v", tag, keyword, c.cfg.APIURL, err)
 		return
 	}
-	// Log đã được gộp vào crawlKeyword
+}
+
+func (c *Crawler) RunLocal(keywords []string) {
+	pw, err := playwright.Run()
+	if err != nil {
+		c.log.Sugar().Errorf("playwright start failed: %v", err)
+		return
+	}
+	defer pw.Stop()
+
+	browser, err := pw.Chromium.Launch(playwright.BrowserTypeLaunchOptions{
+		Headless: playwright.Bool(false),
+	})
+	if err != nil {
+		c.log.Sugar().Errorf("browser launch failed: %v", err)
+		return
+	}
+	defer browser.Close()
+
+	context, err := browser.NewContext()
+	if err != nil {
+		c.log.Sugar().Errorf("browser context failed: %v", err)
+		return
+	}
+
+	loginPage, err := context.NewPage()
+	if err != nil {
+		c.log.Sugar().Errorf("open login page failed: %v", err)
+		return
+	}
+	if _, err := loginPage.Goto(tiktokURL, playwright.PageGotoOptions{
+		WaitUntil: playwright.WaitUntilStateDomcontentloaded,
+		Timeout:   playwright.Float(30000),
+	}); err != nil {
+		c.log.Sugar().Warnf("open tiktok failed: %v", err)
+	}
+	c.log.Sugar().Infof("Browser opened | waiting 30s for login...")
+	time.Sleep(30 * time.Second)
+	loginPage.Close()
+
+	c.log.Sugar().Infof("Starting crawl | %d keywords", len(keywords))
+	c.crawlSearch(context, keywords, c.log, "[LOCAL]")
+	c.log.Sugar().Info("Local test done")
+}
+
+func (c *Crawler) fetchAndLogArticles(log *zap.Logger, tag string) {
+	if c.articleRepo == nil {
+		return
+	}
+	articles, err := c.articleRepo.FindRecentByOrgIDs(c.cfg.OrgIDs)
+	if err != nil {
+		log.Sugar().Warnf("%s fetch articles failed: %v", tag, err)
+		return
+	}
+	log.Sugar().Infof("%s === Articles (24h) | org_ids=%v | count=%d ===", tag, c.cfg.OrgIDs, len(articles))
+	for _, a := range articles {
+		log.Sugar().Infof("%s  [%d] org=%d | %s | %s | views=%d comments=%d | %s",
+			tag, a.ID, a.OrgID, a.PubTime.Format("2006-01-02 15:04"), a.SourceName, a.Views, a.Comments, a.URL)
+	}
 }
 
 func containsAny(s string, subs []string) bool {

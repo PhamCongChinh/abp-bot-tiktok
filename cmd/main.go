@@ -14,6 +14,7 @@ import (
 	"go.uber.org/zap"
 )
 
+
 func main() {
 	cfg := config.Load()
 	log := logger.New(cfg.LogLevel)
@@ -73,9 +74,22 @@ func main() {
 
 	// Init crawler
 	c := crawler.New(cfg, log, nil)
-	
+
+	// Connect to Postgres (optional)
+	if cfg.PostgresURI != "" {
+		postgresDB, err := database.NewPostgresDB(cfg.PostgresURI, log)
+		if err != nil {
+			log.Warn("Failed to connect PostgreSQL, article fetch disabled", zap.Error(err))
+		} else {
+			defer postgresDB.Close()
+			articleRepo := repository.NewArticleRepository(postgresDB.DB, cfg.ArticleTable, log)
+			c.SetArticleRepo(articleRepo)
+			log.Info("PostgreSQL connected - will fetch articles between keywords")
+		}
+	}
+
 	log.Info("Crawler initialized - will crawl same keywords every 1-1.5 hours")
-	
+
 	runCrawler(cfg, log, c)
 }
 
