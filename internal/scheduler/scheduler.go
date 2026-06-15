@@ -25,9 +25,9 @@ func New(cfg *config.Config, log *zap.Logger, c *crawler.Crawler) *Scheduler {
 }
 
 func (s *Scheduler) Start() {
-	// Interval between crawl cycles (105-150 minutes)
-	intervalMin := 105  // 1h45m
-	intervalMax := 150  // 2h30m
+	// Interval between crawl cycles (45-70 minutes)
+	intervalMin := 45
+	intervalMax := 70
 	
 	s.log.Info("Scheduler started with interval mode", 
 		zap.Int("interval_min_minutes", intervalMin),
