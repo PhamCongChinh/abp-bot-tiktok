@@ -12,7 +12,7 @@ import (
 	"abp-bot-tiktok/internal/parser"
 	"abp-bot-tiktok/internal/utils"
 	"abp-bot-tiktok/pkg/config"
-	"abp-bot-tiktok/pkg/gpm"
+	// "abp-bot-tiktok/pkg/gpm"
 	kafkapkg "abp-bot-tiktok/pkg/kafka"
 
 	"github.com/playwright-community/playwright-go"
@@ -122,43 +122,44 @@ func (h *Handler) Handle(data []byte) error {
 
 	h.log.Sugar().Infof("[warning] opening browser → %s", msg.Link)
 
-	profileID := h.cfg.WarningProfileID
-	if profileID == "" && len(h.cfg.ProfileIDs) > 0 {
-		profileID = h.cfg.ProfileIDs[0]
-	}
-	if profileID == "" {
-		return h.publishFailed(msg, "no GPM profile ID available")
-	}
-
 	h.log.Sugar().Infof("[warning] id=%s source=%s org_id=%d auth=%s link=%s",
 		msg.ID, msg.Source, msg.OrgID, msg.AuthName, msg.Link)
 
-	if err := h.gotoURL(profileID, msg); err != nil {
+	if err := h.gotoURL(msg); err != nil {
 		return h.publishFailed(msg, err.Error())
 	}
 	return nil
 }
 
-// gotoURL opens GPM, navigates, scrolls to collect videos, then produces to Kafka.
-func (h *Handler) gotoURL(profileID string, msg Message) error {
-	gpmClient := gpm.NewClient(h.cfg.GPMAPI, h.log)
+// gotoURL opens Chrome directly, navigates, scrolls to collect videos, then produces to Kafka.
+func (h *Handler) gotoURL(msg Message) error {
+	// // GPM mode (production):
+	// gpmClient := gpm.NewClient(h.cfg.GPMAPI, h.log)
+	// wsURL, err := gpmClient.StartProfile(profileID)
+	// if err != nil {
+	// 	return fmt.Errorf("GPM start: %w", err)
+	// }
+	// browser, err := h.pw.Chromium.ConnectOverCDP(wsURL)
+	// if err != nil {
+	// 	return fmt.Errorf("CDP connect: %w", err)
+	// }
+	// contexts := browser.Contexts()
+	// if len(contexts) == 0 {
+	// 	return fmt.Errorf("no browser context from GPM")
+	// }
+	// page, err := contexts[0].NewPage()
 
-	wsURL, err := gpmClient.StartProfile(profileID)
+	chromePath := `C:\Program Files\Google\Chrome\Application\chrome.exe`
+	browser, err := h.pw.Chromium.Launch(playwright.BrowserTypeLaunchOptions{
+		Headless:       playwright.Bool(false),
+		ExecutablePath: playwright.String(chromePath),
+	})
 	if err != nil {
-		return fmt.Errorf("GPM start: %w", err)
+		return fmt.Errorf("launch Chrome: %w", err)
 	}
+	defer browser.Close()
 
-	browser, err := h.pw.Chromium.ConnectOverCDP(wsURL)
-	if err != nil {
-		return fmt.Errorf("CDP connect: %w", err)
-	}
-
-	contexts := browser.Contexts()
-	if len(contexts) == 0 {
-		return fmt.Errorf("no browser context from GPM")
-	}
-
-	page, err := contexts[0].NewPage()
+	page, err := browser.NewPage()
 	if err != nil {
 		return fmt.Errorf("new page: %w", err)
 	}
@@ -228,6 +229,9 @@ func (h *Handler) gotoURL(profileID string, msg Message) error {
 		}(res)
 	})
 
+	h.log.Sugar().Info("[warning] browser opened, waiting 2s...")
+	time.Sleep(2 * time.Second)
+
 	if _, err := page.Goto(msg.Link, playwright.PageGotoOptions{
 		WaitUntil: playwright.WaitUntilStateDomcontentloaded,
 		Timeout:   playwright.Float(30000),
@@ -237,13 +241,25 @@ func (h *Handler) gotoURL(profileID string, msg Message) error {
 	h.log.Sugar().Infof("[warning] navigated to %s", msg.Link)
 	utils.Sleep(3000, 5000)
 
-	mu.Lock()
-	items := collectedItems
-	mu.Unlock()
+	// TikTok nhúng dữ liệu video trực tiếp vào HTML (SSR), không gọi API riêng
+	// → đọc từ script#__UNIVERSAL_DATA_FOR_REHYDRATION__
+	var posts []parser.TiktokPost
+	if ssrPost := h.extractSSRPost(page, msg.OrgID); ssrPost != nil {
+		raw, _ := json.MarshalIndent(ssrPost, "", "  ")
+		h.log.Sugar().Infof("[warning] SSR post mapped:\n%s", string(raw))
+		posts = append(posts, *ssrPost)
+	} else {
+		h.log.Sugar().Warn("[warning] SSR item not found, falling back to API intercept")
+		utils.Sleep(2000, 3000)
+		mu.Lock()
+		items := collectedItems
+		mu.Unlock()
+		posts = h.parseItems(items, msg.OrgID)
+	}
 
-	h.log.Sugar().Infof("[warning] collected %d items", len(items))
-
-	posts := h.parseItems(items, msg.OrgID)
+	h.log.Sugar().Info("[warning] waiting 10s before closing browser...")
+	time.Sleep(10 * time.Second)
+	page.Close()
 
 	h.log.Sugar().Infof("[warning] ── crawled %d posts ──────────────────────", len(posts))
 	for i, post := range posts {
@@ -259,13 +275,14 @@ func (h *Handler) gotoURL(profileID string, msg Message) error {
 	}
 	h.log.Sugar().Infof("[warning] ─────────────────────────────────────────────")
 
-	ctx := context.Background()
-	for _, post := range posts {
-		if err := h.producer.Publish(ctx, post.SubjectID, post); err != nil {
-			h.log.Sugar().Errorf("[warning] produce failed for %s: %v", post.SubjectID, err)
-		}
-	}
-	h.log.Sugar().Infof("[warning] produced %d posts to %s", len(posts), outputTopic)
+	// ctx := context.Background()
+	// for _, post := range posts {
+	// 	if err := h.producer.Publish(ctx, post.SubjectID, post); err != nil {
+	// 		h.log.Sugar().Errorf("[warning] produce failed for %s: %v", post.SubjectID, err)
+	// 	}
+	// }
+	// h.log.Sugar().Infof("[warning] produced %d posts to %s", len(posts), outputTopic)
+	h.log.Sugar().Infof("[warning] Kafka push tạm disabled, %d posts ready", len(posts))
 
 	return nil
 }
@@ -276,6 +293,62 @@ func (h *Handler) publishFailed(msg Message, reason string) error {
 	msg.ErrorMessage = &reason
 	h.log.Sugar().Errorf("[warning] FAILED id=%s reason=%s", msg.ID, reason)
 	return h.producer.Publish(context.Background(), msg.ID, msg)
+}
+
+// extractSSRPost đọc video từ SSR HTML và map thẳng sang TiktokPost
+func (h *Handler) extractSSRPost(page playwright.Page, orgID int) *parser.TiktokPost {
+	raw, err := page.Evaluate(`() => {
+		const el = document.getElementById('__UNIVERSAL_DATA_FOR_REHYDRATION__');
+		return el ? el.textContent : null;
+	}`)
+	if err != nil || raw == nil {
+		h.log.Sugar().Warnf("[warning] SSR script tag not found or eval error: %v", err)
+		return nil
+	}
+	text, ok := raw.(string)
+	if !ok || text == "" {
+		h.log.Sugar().Warn("[warning] SSR text empty")
+		return nil
+	}
+	var data map[string]any
+	if err := json.Unmarshal([]byte(text), &data); err != nil {
+		h.log.Sugar().Warnf("[warning] SSR json parse error: %v", err)
+		return nil
+	}
+	scope, _ := data["__DEFAULT_SCOPE__"].(map[string]any)
+	if scope != nil {
+		keys := make([]string, 0, len(scope))
+		for k := range scope {
+			keys = append(keys, k)
+		}
+		h.log.Sugar().Infof("[warning] SSR scope keys: %v", keys)
+	}
+	videoDetail, _ := scope["webapp.video-detail"].(map[string]any)
+	itemInfo, _ := videoDetail["itemInfo"].(map[string]any)
+	item, _ := itemInfo["itemStruct"].(map[string]any)
+	if item == nil {
+		return nil
+	}
+
+	author, _ := item["author"].(map[string]any)
+	stats, _ := item["stats"].(map[string]any)
+
+	v := models.VideoItem{
+		OrgID:       orgID,
+		VideoID:     toString(item["id"]),
+		Description: toString(item["desc"]),
+		PubTime:     int64(toFloat(item["createTime"])),
+		UniqueID:    toString(mapGet(author, "uniqueId")),
+		AuthID:      toString(mapGet(author, "id")),
+		AuthName:    toString(mapGet(author, "nickname")),
+		Comments:    int64(toFloat(mapGet(stats, "commentCount"))),
+		Shares:      int64(toFloat(mapGet(stats, "shareCount"))),
+		Reactions:   int64(toFloat(mapGet(stats, "diggCount"))),
+		Favors:      int64(toFloat(mapGet(stats, "collectCount"))),
+		Views:       int64(toFloat(mapGet(stats, "playCount"))),
+	}
+	post := parser.FromVideoItem(v)
+	return &post
 }
 
 func (h *Handler) parseItems(items []map[string]any, orgID int) []parser.TiktokPost {
@@ -344,6 +417,11 @@ func toFloat(v any) float64 {
 	}
 	if f, ok := v.(float64); ok {
 		return f
+	}
+	if s, ok := v.(string); ok {
+		if f, err := strconv.ParseFloat(s, 64); err == nil {
+			return f
+		}
 	}
 	return 0
 }
