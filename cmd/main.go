@@ -29,7 +29,7 @@ func main() {
 
 	if cfg.Debug {
 		log.Info("DEBUG mode: running with hardcoded message")
-		testMsg := `{"link":"https://www.tiktok.com/@camngotstudio/video/7609342119219645716","source":"Tiktok","orgId":"50","isAlert":false}`
+		testMsg := `{"link":"https://www.tiktok.com/@camngotstudio/video/7609342119219645716","source":"Tiktok","orgId":"620225","isAlert":false}`
 		if err := warningHandler.Handle([]byte(testMsg)); err != nil {
 			log.Error("Handle error", zap.Error(err))
 		}

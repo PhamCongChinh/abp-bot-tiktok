@@ -11,6 +11,7 @@ import (
 	"abp-bot-tiktok/internal/models"
 	"abp-bot-tiktok/internal/parser"
 	"abp-bot-tiktok/internal/utils"
+	apipkg "abp-bot-tiktok/pkg/api"
 	"abp-bot-tiktok/pkg/config"
 	// "abp-bot-tiktok/pkg/gpm"
 	kafkapkg "abp-bot-tiktok/pkg/kafka"
@@ -72,10 +73,11 @@ type Message struct {
 }
 
 type Handler struct {
-	cfg      *config.Config
-	log      *zap.Logger
-	pw       *playwright.Playwright
-	producer *kafkapkg.Producer
+	cfg       *config.Config
+	log       *zap.Logger
+	pw        *playwright.Playwright
+	producer  *kafkapkg.Producer
+	apiClient *apipkg.Client
 }
 
 func NewHandler(cfg *config.Config, log *zap.Logger) (*Handler, error) {
@@ -84,7 +86,11 @@ func NewHandler(cfg *config.Config, log *zap.Logger) (*Handler, error) {
 		return nil, fmt.Errorf("playwright start: %w", err)
 	}
 	producer := kafkapkg.NewProducer(cfg.KafkaBrokers, outputTopic, log)
-	return &Handler{cfg: cfg, log: log, pw: pw, producer: producer}, nil
+	var apiClient *apipkg.Client
+	if cfg.APIURL != "" {
+		apiClient = apipkg.NewClient(cfg.APIURL, log)
+	}
+	return &Handler{cfg: cfg, log: log, pw: pw, producer: producer, apiClient: apiClient}, nil
 }
 
 func (h *Handler) Close() {
@@ -241,26 +247,38 @@ func (h *Handler) gotoURL(msg Message) error {
 	h.log.Sugar().Infof("[warning] navigated to %s", msg.Link)
 	utils.Sleep(3000, 5000)
 
-	// TikTok nhúng dữ liệu video trực tiếp vào HTML (SSR), không gọi API riêng
-	// → đọc từ script#__UNIVERSAL_DATA_FOR_REHYDRATION__
+	// TikTok nhúng dữ liệu video trực tiếp vào HTML (SSR)
 	var posts []parser.TiktokPost
+	var parseErr string
 	if ssrPost := h.extractSSRPost(page, msg.OrgID); ssrPost != nil {
-		raw, _ := json.MarshalIndent(ssrPost, "", "  ")
-		h.log.Sugar().Infof("[warning] SSR post mapped:\n%s", string(raw))
 		posts = append(posts, *ssrPost)
 	} else {
-		h.log.Sugar().Warn("[warning] SSR item not found, falling back to API intercept")
+		h.log.Sugar().Warn("[warning] SSR not found, trying API intercept")
 		utils.Sleep(2000, 3000)
 		mu.Lock()
 		items := collectedItems
 		mu.Unlock()
 		posts = h.parseItems(items, msg.OrgID)
+		if len(posts) == 0 {
+			parseErr = "cannot extract video data from SSR or API intercept"
+		}
 	}
 
 	h.log.Sugar().Info("[warning] waiting 10s before closing browser...")
 	time.Sleep(10 * time.Second)
 	page.Close()
 
+	ctx := context.Background()
+
+	if len(posts) == 0 {
+		// FAILED → push Kafka
+		h.log.Sugar().Errorf("[warning] FAILED: %s", parseErr)
+		failed := apipkg.FailedWarningPost(msg.Link, msg.Source, msg.OrgID, parseErr)
+		_ = h.producer.Publish(ctx, msg.ID, failed)
+		return nil
+	}
+
+	// SUCCESS → log + push Kafka + gọi API 4416
 	h.log.Sugar().Infof("[warning] ── crawled %d posts ──────────────────────", len(posts))
 	for i, post := range posts {
 		pubTime := time.Unix(post.PubTime, 0).Format("2006-01-02 15:04")
@@ -275,14 +293,23 @@ func (h *Handler) gotoURL(msg Message) error {
 	}
 	h.log.Sugar().Infof("[warning] ─────────────────────────────────────────────")
 
-	// ctx := context.Background()
-	// for _, post := range posts {
-	// 	if err := h.producer.Publish(ctx, post.SubjectID, post); err != nil {
-	// 		h.log.Sugar().Errorf("[warning] produce failed for %s: %v", post.SubjectID, err)
-	// 	}
-	// }
-	// h.log.Sugar().Infof("[warning] produced %d posts to %s", len(posts), outputTopic)
-	h.log.Sugar().Infof("[warning] Kafka push tạm disabled, %d posts ready", len(posts))
+	// Push Kafka (SUCCESS)
+	for _, post := range posts {
+		wp := apipkg.FromTiktokPost(post, msg.Link, msg.Source)
+		if err := h.producer.Publish(ctx, post.SubjectID, wp); err != nil {
+			h.log.Sugar().Errorf("[warning] kafka publish failed: %v", err)
+		}
+	}
+	h.log.Sugar().Infof("[warning] published %d posts to kafka %s", len(posts), outputTopic)
+
+	// Gọi API 4416
+	if h.apiClient != nil {
+		if err := h.apiClient.PostWarning(posts, msg.Link, msg.Source); err != nil {
+			h.log.Sugar().Errorf("[warning] push to API failed: %v", err)
+		} else {
+			h.log.Sugar().Infof("[warning] pushed %d posts to /api/v1/posts/insert-posts", len(posts))
+		}
+	}
 
 	return nil
 }
