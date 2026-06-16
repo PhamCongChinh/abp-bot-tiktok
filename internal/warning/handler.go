@@ -36,6 +36,8 @@ type Message struct {
 	PubTime         int64   `json:"pub_time"`
 	CrawlTime       int64   `json:"crawl_time"`
 	OrgID           int     `json:"org_id"`
+	OrgIDAlias      int     `json:"orgId"`
+	IsAlert         bool    `json:"isAlert"`
 	SubjectID       string  `json:"subject_id"`
 	Title           string  `json:"title"`
 	Description     string  `json:"description"`
@@ -94,6 +96,14 @@ func (h *Handler) Handle(data []byte) error {
 	if err := json.Unmarshal(data, &msg); err != nil {
 		msg.Link = string(data)
 	}
+
+	// Merge orgId → OrgID nếu topic gửi camelCase
+	if msg.OrgID == 0 && msg.OrgIDAlias != 0 {
+		msg.OrgID = msg.OrgIDAlias
+	}
+
+	h.log.Sugar().Infof("[warning] received | link=%s source=%s org_id=%d isAlert=%v",
+		msg.Link, msg.Source, msg.OrgID, msg.IsAlert)
 
 	if msg.Link == "" {
 		h.log.Warn("[warning] empty link in message, skipping")
