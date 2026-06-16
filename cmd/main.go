@@ -21,15 +21,25 @@ func main() {
 
 	log.Info("Starting abp-bot-tiktok...")
 
-	if len(cfg.KafkaBrokers) == 0 {
-		log.Fatal("KAFKA_BROKERS is required")
-	}
-
 	warningHandler, err := warning.NewHandler(cfg, log)
 	if err != nil {
 		log.Fatal("Failed to init warning handler", zap.Error(err))
 	}
 	defer warningHandler.Close()
+
+	if cfg.Debug {
+		log.Info("DEBUG mode: running with hardcoded message")
+		testMsg := `{"link":"https://www.tiktok.com/@camngotstudio/video/7609342119219645716","source":"Tiktok","orgId":"50","isAlert":false}`
+		if err := warningHandler.Handle([]byte(testMsg)); err != nil {
+			log.Error("Handle error", zap.Error(err))
+		}
+		log.Info("Done.")
+		return
+	}
+
+	if len(cfg.KafkaBrokers) == 0 {
+		log.Fatal("KAFKA_BROKERS is required")
+	}
 
 	consumer := kafkaconsumer.NewConsumer(cfg.KafkaBrokers, "manual.warnings.tiktok", cfg.KafkaGroupID, log)
 	defer consumer.Close()
