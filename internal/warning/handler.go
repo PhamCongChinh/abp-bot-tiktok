@@ -223,11 +223,19 @@ func (h *Handler) gotoURL(profileID string, msg Message) error {
 
 	posts := h.parseItems(items, msg.OrgID)
 
-	// Log từng post theo đúng cấu trúc PostEntity
+	h.log.Sugar().Infof("[warning] ── crawled %d posts ──────────────────────", len(posts))
 	for i, post := range posts {
-		data, _ := json.MarshalIndent(post, "", "  ")
-		h.log.Sugar().Infof("[warning] post [%d/%d]:\n%s", i+1, len(posts), string(data))
+		pubTime := time.Unix(post.PubTime, 0).Format("2006-01-02 15:04")
+		desc := post.Description
+		if len(desc) > 80 {
+			desc = desc[:80] + "..."
+		}
+		h.log.Sugar().Infof("[warning] [%d/%d] id=%-20s org=%-6d auth=%-20s views=%-8d comments=%-6d pub=%s",
+			i+1, len(posts), post.SubjectID, post.OrgID, post.AuthName, post.Views, post.Comments, pubTime)
+		h.log.Sugar().Infof("[warning]        url=%s", post.URL)
+		h.log.Sugar().Infof("[warning]        desc=%s", desc)
 	}
+	h.log.Sugar().Infof("[warning] ─────────────────────────────────────────────")
 
 	ctx := context.Background()
 	for _, post := range posts {
