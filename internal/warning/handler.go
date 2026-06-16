@@ -112,9 +112,15 @@ func (h *Handler) Handle(data []byte) error {
 		msg.Link, msg.Source, msg.OrgID, msg.IsAlert)
 
 	if msg.Link == "" {
-		h.log.Warn("[warning] empty link in message, skipping")
+		h.log.Warn("[warning] skipping: empty link")
 		return nil
 	}
+	if msg.OrgID == 0 {
+		h.log.Warn("[warning] skipping: org_id = 0")
+		return nil
+	}
+
+	h.log.Sugar().Infof("[warning] opening browser → %s", msg.Link)
 
 	profileID := h.cfg.WarningProfileID
 	if profileID == "" && len(h.cfg.ProfileIDs) > 0 {
