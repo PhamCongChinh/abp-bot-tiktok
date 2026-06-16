@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
@@ -36,7 +37,7 @@ type Message struct {
 	PubTime         int64   `json:"pub_time"`
 	CrawlTime       int64   `json:"crawl_time"`
 	OrgID           int     `json:"org_id"`
-	OrgIDAlias      int     `json:"orgId"`
+	OrgIDAlias      string  `json:"orgId"`
 	IsAlert         bool    `json:"isAlert"`
 	SubjectID       string  `json:"subject_id"`
 	Title           string  `json:"title"`
@@ -94,12 +95,17 @@ func (h *Handler) Close() {
 func (h *Handler) Handle(data []byte) error {
 	var msg Message
 	if err := json.Unmarshal(data, &msg); err != nil {
-		msg.Link = string(data)
+		h.log.Sugar().Warnf("[warning] json parse error: %v", err)
+		if msg.Link == "" {
+			msg.Link = string(data)
+		}
 	}
 
-	// Merge orgId → OrgID nếu topic gửi camelCase
-	if msg.OrgID == 0 && msg.OrgIDAlias != 0 {
-		msg.OrgID = msg.OrgIDAlias
+	// orgId có thể là string "50" → parse sang int
+	if msg.OrgID == 0 && msg.OrgIDAlias != "" {
+		if n, err := strconv.Atoi(msg.OrgIDAlias); err == nil {
+			msg.OrgID = n
+		}
 	}
 
 	h.log.Sugar().Infof("[warning] received | link=%s source=%s org_id=%d isAlert=%v",
