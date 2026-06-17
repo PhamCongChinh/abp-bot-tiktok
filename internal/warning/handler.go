@@ -13,7 +13,7 @@ import (
 	"abp-bot-tiktok/internal/utils"
 	apipkg "abp-bot-tiktok/pkg/api"
 	"abp-bot-tiktok/pkg/config"
-	// "abp-bot-tiktok/pkg/gpm"
+	"abp-bot-tiktok/pkg/gpm"
 	kafkapkg "abp-bot-tiktok/pkg/kafka"
 
 	"github.com/playwright-community/playwright-go"
@@ -21,55 +21,113 @@ import (
 )
 
 const (
-	oneMonth      = 90 * 24 * 60 * 60
-	profileAPI    = "/api/post/item_list/"
-	searchAPI     = "/api/search/item/full/"
+	oneMonth       = 90 * 24 * 60 * 60
+	profileAPI     = "/api/post/item_list/"
+	searchAPI      = "/api/search/item/full/"
 	videoDetailAPI = "/api/item/detail/"
-	outputTopic   = "abp-manual-message-orchestrator"
+	outputTopic    = "abp-manual-message-orchestrator"
+	maxAttempts    = 5
 )
 
-// Message matches the PostEntity payload published to manual.warnings.{source}.
 type Message struct {
-	ID              string  `json:"id"`
-	DocType         int     `json:"doc_type"`
-	SourceType      int     `json:"source_type"`
-	CrawlSource     int     `json:"crawl_source"`
-	CrawlSourceCode string  `json:"crawl_source_code"`
-	PubTime         int64   `json:"pub_time"`
-	CrawlTime       int64   `json:"crawl_time"`
-	OrgID           int     `json:"org_id"`
-	OrgIDAlias      string  `json:"orgId"`
-	IsAlert         bool    `json:"isAlert"`
-	SubjectID       string  `json:"subject_id"`
-	Title           string  `json:"title"`
-	Description     string  `json:"description"`
-	Content         string  `json:"content"`
-	URL             string  `json:"url"`
-	MediaURLs       string  `json:"media_urls"`
-	Comments        int64   `json:"comments"`
-	Shares          int64   `json:"shares"`
-	Reactions       int64   `json:"reactions"`
-	Favors          int64   `json:"favors"`
-	Views           int64   `json:"views"`
-	WebTags         string  `json:"web_tags"`
-	WebKeywords     string  `json:"web_keywords"`
-	AuthID          string  `json:"auth_id"`
-	AuthName        string  `json:"auth_name"`
-	AuthType        int     `json:"auth_type"`
-	AuthURL         string  `json:"auth_url"`
-	SourceID        string  `json:"source_id"`
-	SourceName      string  `json:"source_name"`
-	SourceURL       string  `json:"source_url"`
-	ReplyTo         *string `json:"reply_to"`
-	Level           int     `json:"level"`
-	Sentiment       int     `json:"sentiment"`
-	IsPriority      bool    `json:"isPriority"`
-	CrawlBot     string     `json:"crawl_bot"`
-	Link         string     `json:"link"`
-	Source       string     `json:"source"`
-	Status       string     `json:"status"`
-	ErrorMessage *string    `json:"error_message,omitempty"`
-	CrawledAt    *time.Time `json:"crawledAt,omitempty"`
+	ID              string     `json:"id"`
+	DocType         int        `json:"doc_type"`
+	SourceType      int        `json:"source_type"`
+	CrawlSource     int        `json:"crawl_source"`
+	CrawlSourceCode string     `json:"crawl_source_code"`
+	PubTime         int64      `json:"pub_time"`
+	CrawlTime       int64      `json:"crawl_time"`
+	OrgID           int        `json:"org_id"`
+	OrgIDAlias      string     `json:"orgId"`
+	IsAlert         bool       `json:"isAlert"`
+	SubjectID       string     `json:"subject_id"`
+	Title           string     `json:"title"`
+	Description     string     `json:"description"`
+	Content         string     `json:"content"`
+	URL             string     `json:"url"`
+	MediaURLs       string     `json:"media_urls"`
+	Comments        int64      `json:"comments"`
+	Shares          int64      `json:"shares"`
+	Reactions       int64      `json:"reactions"`
+	Favors          int64      `json:"favors"`
+	Views           int64      `json:"views"`
+	WebTags         string     `json:"web_tags"`
+	WebKeywords     string     `json:"web_keywords"`
+	AuthID          string     `json:"auth_id"`
+	AuthName        string     `json:"auth_name"`
+	AuthType        int        `json:"auth_type"`
+	AuthURL         string     `json:"auth_url"`
+	SourceID        string     `json:"source_id"`
+	SourceName      string     `json:"source_name"`
+	SourceURL       string     `json:"source_url"`
+	ReplyTo         *string    `json:"reply_to"`
+	Level           int        `json:"level"`
+	Sentiment       int        `json:"sentiment"`
+	IsPriority      bool       `json:"isPriority"`
+	CrawlBot        string     `json:"crawl_bot"`
+	Link            string     `json:"link"`
+	Source          string     `json:"source"`
+	Status          string     `json:"status"`
+	ErrorMessage    *string    `json:"error_message,omitempty"`
+	CrawledAt       *time.Time `json:"crawledAt,omitempty"`
+}
+
+// profilePool quản lý GPM profile IDs theo round-robin, thread-safe.
+type profilePool struct {
+	mu     sync.Mutex
+	ids    []string
+	busy   map[string]bool
+	cursor int
+}
+
+func newProfilePool(ids []string) *profilePool {
+	return &profilePool{ids: ids, busy: make(map[string]bool)}
+}
+
+// acquireNext trả về profile ID tiếp theo không bận (round-robin).
+// Trả về "" nếu tất cả đang bận.
+func (p *profilePool) acquireNext() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	n := len(p.ids)
+	if n == 0 {
+		return ""
+	}
+	for i := 0; i < n; i++ {
+		idx := (p.cursor + i) % n
+		id := p.ids[idx]
+		if !p.busy[id] {
+			p.busy[id] = true
+			p.cursor = (idx + 1) % n
+			return id
+		}
+	}
+	return ""
+}
+
+// waitAcquire chờ tối đa timeout để lấy profile rảnh.
+func (p *profilePool) waitAcquire(timeout time.Duration) (string, bool) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if id := p.acquireNext(); id != "" {
+			return id, true
+		}
+		time.Sleep(3 * time.Second)
+	}
+	return "", false
+}
+
+func (p *profilePool) release(id string) {
+	if id == "" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.busy, id)
+}
+
+func (p *profilePool) hasProfiles() bool {
+	return len(p.ids) > 0
 }
 
 type Handler struct {
@@ -78,6 +136,8 @@ type Handler struct {
 	pw        *playwright.Playwright
 	producer  *kafkapkg.Producer
 	apiClient *apipkg.Client
+	gpmClient *gpm.Client
+	pool      *profilePool
 }
 
 func NewHandler(cfg *config.Config, log *zap.Logger) (*Handler, error) {
@@ -90,7 +150,20 @@ func NewHandler(cfg *config.Config, log *zap.Logger) (*Handler, error) {
 	if cfg.APIURL != "" {
 		apiClient = apipkg.NewClient(cfg.APIURL, log)
 	}
-	return &Handler{cfg: cfg, log: log, pw: pw, producer: producer, apiClient: apiClient}, nil
+	var gpmClient *gpm.Client
+	if cfg.UseGPM {
+		gpmClient = gpm.NewClient(cfg.GPMAPI, log)
+	}
+	pool := newProfilePool(cfg.ProfileIDs)
+	return &Handler{
+		cfg:       cfg,
+		log:       log,
+		pw:        pw,
+		producer:  producer,
+		apiClient: apiClient,
+		gpmClient: gpmClient,
+		pool:      pool,
+	}, nil
 }
 
 func (h *Handler) Close() {
@@ -106,8 +179,6 @@ func (h *Handler) Handle(data []byte) error {
 			msg.Link = string(data)
 		}
 	}
-
-	// orgId có thể là string "50" → parse sang int
 	if msg.OrgID == 0 && msg.OrgIDAlias != "" {
 		if n, err := strconv.Atoi(msg.OrgIDAlias); err == nil {
 			msg.OrgID = n
@@ -126,51 +197,117 @@ func (h *Handler) Handle(data []byte) error {
 		return nil
 	}
 
-	h.log.Sugar().Infof("[warning] opening browser → %s", msg.Link)
+	ctx := context.Background()
+	useGPM := h.gpmClient != nil && h.pool.hasProfiles()
 
-	h.log.Sugar().Infof("[warning] id=%s source=%s org_id=%d auth=%s link=%s",
-		msg.ID, msg.Source, msg.OrgID, msg.AuthName, msg.Link)
+	var lastErr string
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		var profileID string
 
-	if err := h.gotoURL(msg); err != nil {
-		return h.publishFailed(msg, err.Error())
+		if useGPM {
+			var ok bool
+			profileID, ok = h.pool.waitAcquire(60 * time.Second)
+			if !ok {
+				lastErr = "no profile available after 60s"
+				h.log.Sugar().Errorf("[warning] attempt %d/%d: %s", attempt, maxAttempts, lastErr)
+				continue
+			}
+			h.log.Sugar().Infof("[warning] attempt %d/%d profile=%.8s...", attempt, maxAttempts, profileID)
+		} else {
+			h.log.Sugar().Infof("[warning] attempt %d/%d (direct Chrome)", attempt, maxAttempts)
+		}
+
+		posts, err := h.crawl(msg, profileID)
+
+		if useGPM {
+			h.pool.release(profileID)
+		}
+
+		if err != nil {
+			lastErr = err.Error()
+			h.log.Sugar().Warnf("[warning] attempt %d/%d failed: %v", attempt, maxAttempts, err)
+			continue
+		}
+		if len(posts) == 0 {
+			lastErr = "cannot extract video data from SSR or API intercept"
+			h.log.Sugar().Warnf("[warning] attempt %d/%d no data found", attempt, maxAttempts)
+			continue
+		}
+
+		// SUCCESS
+		h.logPosts(posts)
+
+		for _, post := range posts {
+			wp := apipkg.FromTiktokPost(post, msg.Link, msg.Source)
+			if err := h.producer.Publish(ctx, post.SubjectID, wp); err != nil {
+				h.log.Sugar().Errorf("[warning] kafka publish failed: %v", err)
+			}
+		}
+		h.log.Sugar().Infof("[warning] published %d posts to kafka %s", len(posts), outputTopic)
+
+		if h.apiClient != nil {
+			if err := h.apiClient.PostWarning(posts, msg.Link, msg.Source); err != nil {
+				h.log.Sugar().Errorf("[warning] push to API failed: %v", err)
+			} else {
+				h.log.Sugar().Infof("[warning] pushed %d posts to /api/v1/posts/insert-posts", len(posts))
+			}
+		}
+		return nil
 	}
+
+	// Tất cả attempts thất bại
+	h.log.Sugar().Errorf("[warning] FAILED after %d attempts: %s", maxAttempts, lastErr)
+	failed := apipkg.FailedWarningPost(msg.Link, msg.Source, msg.OrgID, lastErr)
+	_ = h.producer.Publish(ctx, msg.ID, failed)
 	return nil
 }
 
-// gotoURL opens Chrome directly, navigates, scrolls to collect videos, then produces to Kafka.
-func (h *Handler) gotoURL(msg Message) error {
-	// // GPM mode (production):
-	// gpmClient := gpm.NewClient(h.cfg.GPMAPI, h.log)
-	// wsURL, err := gpmClient.StartProfile(profileID)
-	// if err != nil {
-	// 	return fmt.Errorf("GPM start: %w", err)
-	// }
-	// browser, err := h.pw.Chromium.ConnectOverCDP(wsURL)
-	// if err != nil {
-	// 	return fmt.Errorf("CDP connect: %w", err)
-	// }
-	// contexts := browser.Contexts()
-	// if len(contexts) == 0 {
-	// 	return fmt.Errorf("no browser context from GPM")
-	// }
-	// page, err := contexts[0].NewPage()
+// crawl mở browser (GPM hoặc direct Chrome), navigate, extract dữ liệu.
+// profileID="" → direct Chrome.
+func (h *Handler) crawl(msg Message, profileID string) ([]parser.TiktokPost, error) {
+	var page playwright.Page
 
-	chromePath := `C:\Program Files\Google\Chrome\Application\chrome.exe`
-	browser, err := h.pw.Chromium.Launch(playwright.BrowserTypeLaunchOptions{
-		Headless:       playwright.Bool(false),
-		ExecutablePath: playwright.String(chromePath),
-	})
-	if err != nil {
-		return fmt.Errorf("launch Chrome: %w", err)
+	if profileID != "" {
+		// GPM mode: kết nối qua CDP
+		wsURL, err := h.gpmClient.StartProfile(profileID)
+		if err != nil {
+			return nil, fmt.Errorf("GPM start profile %.8s: %w", profileID, err)
+		}
+		browser, err := h.pw.Chromium.ConnectOverCDP(wsURL)
+		if err != nil {
+			return nil, fmt.Errorf("CDP connect profile %.8s: %w", profileID, err)
+		}
+		defer browser.Close()
+
+		contexts := browser.Contexts()
+		if len(contexts) == 0 {
+			return nil, fmt.Errorf("no browser context from GPM profile %.8s", profileID)
+		}
+		p, err := contexts[0].NewPage()
+		if err != nil {
+			return nil, fmt.Errorf("new page profile %.8s: %w", profileID, err)
+		}
+		page = p
+	} else {
+		// Direct Chrome
+		chromePath := `C:\Program Files\Google\Chrome\Application\chrome.exe`
+		browser, err := h.pw.Chromium.Launch(playwright.BrowserTypeLaunchOptions{
+			Headless:       playwright.Bool(false),
+			ExecutablePath: playwright.String(chromePath),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("launch Chrome: %w", err)
+		}
+		defer browser.Close()
+
+		p, err := browser.NewPage()
+		if err != nil {
+			return nil, fmt.Errorf("new page: %w", err)
+		}
+		page = p
 	}
-	defer browser.Close()
 
-	page, err := browser.NewPage()
-	if err != nil {
-		return fmt.Errorf("new page: %w", err)
-	}
-
-	// Intercept TikTok API responses to collect video items
+	// Intercept TikTok API responses
 	var mu sync.Mutex
 	var collectedItems []map[string]any
 
@@ -184,34 +321,27 @@ func (h *Handler) gotoURL(msg Message) error {
 			if err := res.JSON(&body); err != nil || body == nil {
 				return
 			}
-
 			var rawItems []any
-
 			switch {
-			// Single video detail: /api/item/detail/
 			case containsAny(url, []string{videoDetailAPI}):
 				if info, ok := body["itemInfo"].(map[string]any); ok {
 					if item, ok := info["itemStruct"].(map[string]any); ok {
 						rawItems = []any{item}
 					}
 				}
-			// Profile list: /api/post/item_list/
 			case containsAny(url, []string{profileAPI}):
 				if v, ok := body["itemList"].([]any); ok {
 					rawItems = v
 				}
-			// Search: /api/search/item/full/
 			default:
 				if v, ok := body["item_list"].([]any); ok {
 					rawItems = v
 				}
 			}
-
 			if len(rawItems) == 0 {
 				return
 			}
 			h.log.Sugar().Infof("[warning] API hit %s items=%d", url, len(rawItems))
-
 			mu.Lock()
 			defer mu.Unlock()
 			seen := make(map[string]bool)
@@ -242,43 +372,32 @@ func (h *Handler) gotoURL(msg Message) error {
 		WaitUntil: playwright.WaitUntilStateDomcontentloaded,
 		Timeout:   playwright.Float(30000),
 	}); err != nil {
-		return fmt.Errorf("goto timeout/blocked: %w", err)
+		return nil, fmt.Errorf("goto: %w", err)
 	}
 	h.log.Sugar().Infof("[warning] navigated to %s", msg.Link)
 	utils.Sleep(3000, 5000)
 
-	// TikTok nhúng dữ liệu video trực tiếp vào HTML (SSR)
+	// SSR extraction
 	var posts []parser.TiktokPost
-	var parseErr string
 	if ssrPost := h.extractSSRPost(page, msg.OrgID); ssrPost != nil {
 		posts = append(posts, *ssrPost)
 	} else {
-		h.log.Sugar().Warn("[warning] SSR not found, trying API intercept")
+		h.log.Warn("[warning] SSR not found, trying API intercept")
 		utils.Sleep(2000, 3000)
 		mu.Lock()
 		items := collectedItems
 		mu.Unlock()
 		posts = h.parseItems(items, msg.OrgID)
-		if len(posts) == 0 {
-			parseErr = "cannot extract video data from SSR or API intercept"
-		}
 	}
 
 	h.log.Sugar().Info("[warning] waiting 10s before closing browser...")
 	time.Sleep(10 * time.Second)
 	page.Close()
 
-	ctx := context.Background()
+	return posts, nil
+}
 
-	if len(posts) == 0 {
-		// FAILED → push Kafka
-		h.log.Sugar().Errorf("[warning] FAILED: %s", parseErr)
-		failed := apipkg.FailedWarningPost(msg.Link, msg.Source, msg.OrgID, parseErr)
-		_ = h.producer.Publish(ctx, msg.ID, failed)
-		return nil
-	}
-
-	// SUCCESS → log + push Kafka + gọi API 4416
+func (h *Handler) logPosts(posts []parser.TiktokPost) {
 	h.log.Sugar().Infof("[warning] ── crawled %d posts ──────────────────────", len(posts))
 	for i, post := range posts {
 		pubTime := time.Unix(post.PubTime, 0).Format("2006-01-02 15:04")
@@ -291,50 +410,21 @@ func (h *Handler) gotoURL(msg Message) error {
 		h.log.Sugar().Infof("[warning]        url=%s", post.URL)
 		h.log.Sugar().Infof("[warning]        desc=%s", desc)
 	}
-	h.log.Sugar().Infof("[warning] ─────────────────────────────────────────────")
-
-	// Push Kafka (SUCCESS)
-	for _, post := range posts {
-		wp := apipkg.FromTiktokPost(post, msg.Link, msg.Source)
-		if err := h.producer.Publish(ctx, post.SubjectID, wp); err != nil {
-			h.log.Sugar().Errorf("[warning] kafka publish failed: %v", err)
-		}
-	}
-	h.log.Sugar().Infof("[warning] published %d posts to kafka %s", len(posts), outputTopic)
-
-	// Gọi API 4416
-	if h.apiClient != nil {
-		if err := h.apiClient.PostWarning(posts, msg.Link, msg.Source); err != nil {
-			h.log.Sugar().Errorf("[warning] push to API failed: %v", err)
-		} else {
-			h.log.Sugar().Infof("[warning] pushed %d posts to /api/v1/posts/insert-posts", len(posts))
-		}
-	}
-
-	return nil
+	h.log.Sugar().Info("[warning] ─────────────────────────────────────────────")
 }
 
-// publishFailed produces the original message back with status=FAILED.
-func (h *Handler) publishFailed(msg Message, reason string) error {
-	msg.Status = "FAILED"
-	msg.ErrorMessage = &reason
-	h.log.Sugar().Errorf("[warning] FAILED id=%s reason=%s", msg.ID, reason)
-	return h.producer.Publish(context.Background(), msg.ID, msg)
-}
-
-// extractSSRPost đọc video từ SSR HTML và map thẳng sang TiktokPost
 func (h *Handler) extractSSRPost(page playwright.Page, orgID int) *parser.TiktokPost {
 	raw, err := page.Evaluate(`() => {
 		const el = document.getElementById('__UNIVERSAL_DATA_FOR_REHYDRATION__');
 		return el ? el.textContent : null;
 	}`)
 	if err != nil || raw == nil {
-		h.log.Sugar().Warnf("[warning] SSR script tag not found or eval error: %v", err)
+		h.log.Sugar().Warnf("[warning] SSR script tag not found: %v", err)
 		return nil
 	}
 	text, ok := raw.(string)
 	if !ok || text == "" {
-		h.log.Sugar().Warn("[warning] SSR text empty")
+		h.log.Warn("[warning] SSR text empty")
 		return nil
 	}
 	var data map[string]any
@@ -382,7 +472,6 @@ func (h *Handler) parseItems(items []map[string]any, orgID int) []parser.TiktokP
 	nowTs := time.Now().Unix()
 	cutoff := nowTs - oneMonth
 	var posts []parser.TiktokPost
-
 	for _, item := range items {
 		pubTime := int64(toFloat(item["createTime"]))
 		if pubTime > 0 && pubTime < cutoff {
@@ -390,7 +479,6 @@ func (h *Handler) parseItems(items []map[string]any, orgID int) []parser.TiktokP
 		}
 		author, _ := item["author"].(map[string]any)
 		stats, _ := item["stats"].(map[string]any)
-
 		v := models.VideoItem{
 			OrgID:       orgID,
 			VideoID:     toString(item["id"]),
@@ -408,13 +496,6 @@ func (h *Handler) parseItems(items []map[string]any, orgID int) []parser.TiktokP
 		posts = append(posts, parser.FromVideoItem(v))
 	}
 	return posts
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "..."
 }
 
 func containsAny(s string, subs []string) bool {

@@ -6,8 +6,10 @@ import (
 	"os/signal"
 	"syscall"
 
+	"abp-bot-tiktok/internal/repository"
 	"abp-bot-tiktok/internal/warning"
 	"abp-bot-tiktok/pkg/config"
+	"abp-bot-tiktok/pkg/database"
 	kafkaconsumer "abp-bot-tiktok/pkg/kafka"
 	"abp-bot-tiktok/pkg/logger"
 
@@ -20,6 +22,25 @@ func main() {
 	defer log.Sync()
 
 	log.Info("Starting abp-bot-tiktok...")
+
+	// Load profile IDs từ MongoDB thay vì .env
+	mongoDB, err := database.NewMongoDB(cfg.MongoURI, cfg.MongoDB, log)
+	if err != nil {
+		log.Fatal("Failed to connect MongoDB", zap.Error(err))
+	}
+	defer mongoDB.Close()
+
+	configRepo := repository.NewTiktokConfigManualRepository(mongoDB.Database(), log)
+	profileIDs, err := configRepo.GetProfileIDs()
+	if err != nil {
+		log.Fatal("Failed to load profile IDs from tiktok_configs_manual", zap.Error(err))
+	}
+	if len(profileIDs) == 0 {
+		log.Fatal("No profile IDs found in tiktok_configs_manual")
+	}
+	cfg.ProfileIDs = profileIDs
+	cfg.UseGPM = cfg.GPMAPI != "" && len(profileIDs) > 0
+	log.Sugar().Infof("Loaded %d profile IDs from MongoDB: %v", len(profileIDs), profileIDs)
 
 	warningHandler, err := warning.NewHandler(cfg, log)
 	if err != nil {
