@@ -56,9 +56,9 @@ func Load() *Config {
 		MinIOSecretKey:       getEnv("MINIO_SECRET_KEY", ""),
 		MinIOBucket:          getEnv("MINIO_BUCKET", ""),
 		SourceID:             getEnv("SOURCE_ID", "scraper_tiktok"),
-		ClaimChunk:           getEnvInt("CLAIM_CHUNK", 10),
-		ClaimPollIntervalMS:  getEnvInt("CLAIM_POLL_INTERVAL_MS", 5000),
-		TikTokContentPageCap: getEnvInt("TIKTOK_CONTENT_PAGE_CAP", 5),
+		ClaimChunk:           getEnvInt("CLAIM_CHUNK", 5),
+		ClaimPollIntervalMS:  getEnvInt("CLAIM_POLL_INTERVAL_MS", 10000),
+		TikTokContentPageCap: getEnvInt("TIKTOK_CONTENT_PAGE_CAP", 10),
 	}
 }
 

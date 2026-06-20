@@ -56,11 +56,11 @@ docker compose up -d
 | `MINIO_ENDPOINT` | — | MinIO endpoint |
 | `MINIO_ACCESS_KEY` | — | MinIO access key |
 | `MINIO_SECRET_KEY` | — | MinIO secret key |
-| `MINIO_BUCKET` | `crawler-landing` | MinIO bucket for landing results |
+| `MINIO_BUCKET` | `raw` | MinIO bucket for landing results |
 | `SOURCE_ID` | `scraper_tiktok` | Source ID written to `raw.fetch_request` claim |
-| `CLAIM_CHUNK` | `10` | Number of rows to claim per poll |
-| `CLAIM_POLL_INTERVAL_MS` | `5000` | Poll interval when queue is empty (ms) |
-| `TIKTOK_CONTENT_PAGE_CAP` | `5` | Max pages to scroll per content item |
+| `CLAIM_CHUNK` | `5` | Number of rows to claim per poll |
+| `CLAIM_POLL_INTERVAL_MS` | `10000` | Poll interval when queue is empty (ms) |
+| `TIKTOK_CONTENT_PAGE_CAP` | `10` | Max pages to scroll per content item |
 
 ## Development
 
