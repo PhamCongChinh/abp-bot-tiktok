@@ -1,0 +1,27 @@
+version: "3.9"
+
+networks:
+  crawler-net:
+    external: true
+
+services:
+  tiktok-crawler:
+    build: .
+    restart: unless-stopped
+    networks:
+      - crawler-net
+    environment:
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      DEBUG: ${DEBUG:-false}
+      BOT_NAME: ${BOT_NAME:-abp-bot-tiktok}
+      GOLOGIN_LAUNCHER_URL: ${GOLOGIN_LAUNCHER_URL:-http://gologin-launcher:4000}
+      TIKTOK_PROFILE_IDS: ${TIKTOK_PROFILE_IDS:-}
+      POSTGRES_DSN: ${POSTGRES_DSN:-}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio:9000}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-}
+      MINIO_BUCKET: ${MINIO_BUCKET:-raw}
+      SOURCE_ID: ${SOURCE_ID:-scraper_tiktok}
+      CLAIM_CHUNK: ${CLAIM_CHUNK:-5}
+      CLAIM_POLL_INTERVAL_MS: ${CLAIM_POLL_INTERVAL_MS:-10000}
+      TIKTOK_CONTENT_PAGE_CAP: ${TIKTOK_CONTENT_PAGE_CAP:-10}

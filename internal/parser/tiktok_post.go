@@ -20,6 +20,7 @@ type TiktokPost struct {
 	DocType         int     `json:"doc_type"`
 	CrawlSource     int     `json:"crawl_source"`
 	CrawlSourceCode string  `json:"crawl_source_code"`
+	OrgID           int     `json:"org_id"`
 	PubTime         int64   `json:"pub_time"`
 	CrawlTime       int64   `json:"crawl_time"`
 	SubjectID       string  `json:"subject_id"`
@@ -58,6 +59,7 @@ func FromVideoItem(v models.VideoItem) TiktokPost {
 		DocType:         docType,
 		CrawlSource:     crawlSource,
 		CrawlSourceCode: crawlSourceCode,
+		OrgID:           v.OrgID,
 		PubTime:         v.PubTime,
 		CrawlTime:       time.Now().Unix(),
 		SubjectID:       v.VideoID,
@@ -77,7 +79,7 @@ func FromVideoItem(v models.VideoItem) TiktokPost {
 		AuthName:        v.AuthName,
 		AuthType:        authType,
 		AuthURL:         authorURL,
-		SourceID:        v.VideoID,
+		SourceID:        v.AuthID,
 		SourceType:      sourceType,
 		SourceName:      v.AuthName,
 		SourceURL:       videoURL,
