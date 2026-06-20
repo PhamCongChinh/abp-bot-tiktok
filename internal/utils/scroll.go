@@ -10,7 +10,7 @@ import (
 func HumanScroll(page playwright.Page, times int) error {
 	for i := 0; i < times; i++ {
 		// Use mouse wheel - most reliable for TikTok's custom scroll containers
-		page.Mouse().Move(
+		_ = page.Mouse().Move(
 			float64(RandInt(400, 800)),
 			float64(RandInt(300, 500)),
 		)
@@ -19,13 +19,13 @@ func HumanScroll(page playwright.Page, times int) error {
 		// Scroll ~80-95% of viewport height using wheel delta
 		// Wheel delta ~100 per notch, viewport ~900px → need ~7-9 notches = 700-900 delta
 		wheelDelta := RandInt(700, 900)
-		page.Mouse().Wheel(0, float64(wheelDelta))
+		_ = page.Mouse().Wheel(0, float64(wheelDelta))
 
 		Sleep(800, 1500) // wait for content to load
 
 		// 15% chance: scroll back up slightly
 		if rand.Float64() < 0.15 {
-			page.Mouse().Wheel(0, float64(-RandInt(150, 200)))
+			_ = page.Mouse().Wheel(0, float64(-RandInt(150, 200)))
 			Sleep(300, 600)
 		}
 
@@ -62,7 +62,7 @@ func RandomViewVideo(page playwright.Page) error {
 
 	// 70% chance: scroll a bit before selecting
 	if rand.Float64() < 0.7 {
-		page.Mouse().Wheel(0, float64(RandInt(200, 700)))
+		_ = page.Mouse().Wheel(0, float64(RandInt(200, 700)))
 		Sleep(800, 2000)
 	}
 
@@ -81,7 +81,7 @@ func RandomViewVideo(page playwright.Page) error {
 	originalURL := page.URL()
 
 	// Scroll to video
-	video.ScrollIntoViewIfNeeded()
+	_ = video.ScrollIntoViewIfNeeded()
 	Sleep(800, 2000)
 
 	// Get bounding box
@@ -94,17 +94,17 @@ func RandomViewVideo(page playwright.Page) error {
 		for i := 0; i < RandInt(2, 4); i++ {
 			x := startX + float64(RandInt(-30, 30))
 			y := startY + float64(RandInt(-30, 30))
-			page.Mouse().Move(x, y, playwright.MouseMoveOptions{
+			_ = page.Mouse().Move(x, y, playwright.MouseMoveOptions{
 				Steps: playwright.Int(RandInt(5, 15)),
 			})
 			Sleep(200, 600)
 		}
 
-		page.Mouse().Move(startX, startY, playwright.MouseMoveOptions{
+		_ = page.Mouse().Move(startX, startY, playwright.MouseMoveOptions{
 			Steps: playwright.Int(RandInt(10, 20)),
 		})
 	} else {
-		video.Hover(playwright.LocatorHoverOptions{Force: playwright.Bool(true)})
+		_ = video.Hover(playwright.LocatorHoverOptions{Force: playwright.Bool(true)})
 	}
 	Sleep(1000, 2500)
 
@@ -117,9 +117,9 @@ func RandomViewVideo(page playwright.Page) error {
 	if box != nil {
 		clickX := box.X + float64(RandInt(10, int(box.Width-10)))
 		clickY := box.Y + float64(RandInt(10, int(box.Height-10)))
-		page.Mouse().Click(clickX, clickY)
+		_ = page.Mouse().Click(clickX, clickY)
 	} else {
-		video.Click(playwright.LocatorClickOptions{Force: playwright.Bool(true)})
+		_ = video.Click(playwright.LocatorClickOptions{Force: playwright.Bool(true)})
 	}
 
 	// Watch video 8-25 seconds
@@ -127,7 +127,7 @@ func RandomViewVideo(page playwright.Page) error {
 
 	// 30% chance: scroll comments
 	if rand.Float64() < 0.3 {
-		page.Mouse().Wheel(0, float64(RandInt(300, 800)))
+		_ = page.Mouse().Wheel(0, float64(RandInt(300, 800)))
 		Sleep(2000, 5000)
 	}
 
@@ -135,12 +135,12 @@ func RandomViewVideo(page playwright.Page) error {
 	if currentURL := page.URL(); currentURL != originalURL {
 		if _, err := page.GoBack(); err != nil {
 			// Fallback: navigate directly back
-			page.Goto(originalURL, playwright.PageGotoOptions{
+			_, _ = page.Goto(originalURL, playwright.PageGotoOptions{
 				WaitUntil: playwright.WaitUntilStateDomcontentloaded,
 				Timeout:   playwright.Float(60000),
 			})
 		} else {
-			page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
+			_ = page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
 				State: playwright.LoadStateDomcontentloaded,
 			})
 		}
