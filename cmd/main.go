@@ -120,7 +120,7 @@ func validateConfig(cfg *config.Config, log *zap.Logger) error {
 		missing = append(missing, "MINIO_BUCKET")
 	}
 	if len(cfg.TikTokProfileIDs) == 0 {
-		missing = append(missing, "TIKTOK_PROFILE_IDS")
+		missing = append(missing, "TIKTOK_PROFILE_IDS (add at least one GoLogin profile UUID before starting the TikTok crawler)")
 	}
 	if len(missing) > 0 {
 		for _, m := range missing {
