@@ -46,7 +46,7 @@ func main() {
 	minioEndpoint := strings.TrimPrefix(cfg.MinIOEndpoint, "http://")
 	minioEndpoint = strings.TrimPrefix(minioEndpoint, "https://")
 	useSSL := strings.HasPrefix(cfg.MinIOEndpoint, "https://")
-	writer, err := landing.New(pool, minioEndpoint, cfg.MinIOAccessKey, cfg.MinIOSecretKey, cfg.MinIOBucket, useSSL)
+	writer, err := landing.New(pool, minioEndpoint, cfg.MinIOAccessKey, cfg.MinIOSecretKey, cfg.MinIOBucket, useSSL, log)
 	if err != nil {
 		log.Fatal("landing writer", zap.Error(err))
 	}

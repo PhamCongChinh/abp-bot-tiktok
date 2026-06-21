@@ -15,6 +15,7 @@ import (
 	"github.com/klauspost/compress/zstd"
 	minio "github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
+	"go.uber.org/zap"
 )
 
 // LandingItem is the input to Land — one extracted entity from the browser scraper.
@@ -42,10 +43,11 @@ type Writer struct {
 	minioClient *minio.Client
 	bucket      string
 	encoder     *zstd.Encoder
+	log         *zap.Logger
 }
 
 // New creates a Writer. minioEndpoint must not include a scheme prefix.
-func New(pool *pgxpool.Pool, minioEndpoint, accessKey, secretKey, bucket string, useSSL bool) (*Writer, error) {
+func New(pool *pgxpool.Pool, minioEndpoint, accessKey, secretKey, bucket string, useSSL bool, log *zap.Logger) (*Writer, error) {
 	mc, err := minio.New(minioEndpoint, &minio.Options{
 		Creds:  credentials.NewStaticV4(accessKey, secretKey, ""),
 		Secure: useSSL,
@@ -64,6 +66,7 @@ func New(pool *pgxpool.Pool, minioEndpoint, accessKey, secretKey, bucket string,
 		minioClient: mc,
 		bucket:      bucket,
 		encoder:     enc,
+		log:         log,
 	}, nil
 }
 
@@ -85,8 +88,17 @@ func (w *Writer) Land(ctx context.Context, item LandingItem) error {
 		minio.PutObjectOptions{ContentType: "application/zstd"},
 	)
 	if err != nil {
+		w.log.Error("minio put failed",
+			zap.String("key", minioKey),
+			zap.Error(err),
+		)
 		return fmt.Errorf("landing: minio put %s: %w", minioKey, err)
 	}
+	w.log.Debug("minio put ok",
+		zap.String("key", minioKey),
+		zap.Int("raw_bytes", len(item.RawBytes)),
+		zap.Int("compressed_bytes", len(compressed)),
+	)
 
 	// Step 4: insert into raw.record — silent no-op on duplicate.
 	envelopeJSON, err := json.Marshal(item.Envelope)
@@ -94,7 +106,7 @@ func (w *Writer) Land(ctx context.Context, item LandingItem) error {
 		return fmt.Errorf("landing: marshal envelope: %w", err)
 	}
 
-	_, err = w.pool.Exec(ctx, `
+	tag, err := w.pool.Exec(ctx, `
 		INSERT INTO raw.record
 			(source_id, platform, entity_kind, source_record_id,
 			 payload_uri, payload_hash, envelope, fetched_at,
@@ -112,7 +124,21 @@ func (w *Writer) Land(ctx context.Context, item LandingItem) error {
 		0.7,
 	)
 	if err != nil {
+		w.log.Error("raw.record insert failed",
+			zap.String("source_record_id", item.SourceRecordID),
+			zap.Error(err),
+		)
 		return fmt.Errorf("landing: insert raw.record: %w", err)
+	}
+	if tag.RowsAffected() == 1 {
+		w.log.Debug("raw.record inserted",
+			zap.String("entity_kind", item.EntityKind),
+			zap.String("source_record_id", item.SourceRecordID),
+		)
+	} else {
+		w.log.Debug("raw.record duplicate skipped",
+			zap.String("source_record_id", item.SourceRecordID),
+		)
 	}
 
 	return nil
@@ -131,7 +157,25 @@ func (w *Writer) Finalize(ctx context.Context, id uuid.UUID, status string, last
 		id,
 	)
 	if err != nil {
+		w.log.Error("finalize fetch_request failed",
+			zap.String("id", id.String()),
+			zap.String("status", status),
+			zap.Error(err),
+		)
 		return fmt.Errorf("landing: update fetch_request %s: %w", id, err)
+	}
+	if status == "landed" {
+		w.log.Info("fetch_request landed", zap.String("id", id.String()))
+	} else {
+		errStr := ""
+		if lastError != nil {
+			errStr = *lastError
+		}
+		w.log.Warn("fetch_request failed",
+			zap.String("id", id.String()),
+			zap.String("status", status),
+			zap.String("error", errStr),
+		)
 	}
 	return nil
 }

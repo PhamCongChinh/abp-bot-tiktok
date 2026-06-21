@@ -156,6 +156,10 @@ func (cl *ClaimLoop) Poll() ([]FetchRequest, error) {
 	}
 
 	if len(items) > 0 {
+		cl.log.Info("poll: claimed rows",
+			zap.Int("count", len(items)),
+			zap.String("source_id", cl.cfg.SourceID),
+		)
 		if err := cl.rotateProfile(); err != nil {
 			cl.log.Warn("profile rotation failed", zap.Error(err))
 		}
@@ -207,10 +211,15 @@ func (cl *ClaimLoop) Run(dispatch func([]FetchRequest)) {
 		}
 
 		if len(items) == 0 {
+			cl.log.Debug("poll: queue empty, sleeping",
+				zap.Int("poll_interval_ms", cl.cfg.ClaimPollIntervalMS),
+			)
 			time.Sleep(time.Duration(cl.cfg.ClaimPollIntervalMS) * time.Millisecond)
 			continue
 		}
 
+		cl.log.Info("dispatch: processing batch", zap.Int("count", len(items)))
 		dispatch(items)
+		cl.log.Info("dispatch: batch done", zap.Int("count", len(items)))
 	}
 }
