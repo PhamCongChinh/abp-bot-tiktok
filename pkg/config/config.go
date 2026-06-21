@@ -9,9 +9,9 @@ import (
 )
 
 type Config struct {
-	LogLevel  string
-	Debug     bool
-	BotName   string
+	LogLevel string
+	Debug    bool
+	BotName  string
 	// GoLogin launcher sidecar
 	GoLoginLauncherURL string
 	// TikTok profile IDs (comma-separated)
@@ -24,9 +24,9 @@ type Config struct {
 	MinIOSecretKey string
 	MinIOBucket    string
 	// Crawler settings
-	SourceID            string
-	ClaimChunk          int
-	ClaimPollIntervalMS int
+	SourceID             string
+	ClaimChunk           int
+	ClaimPollIntervalMS  int
 	TikTokContentPageCap int
 }
 
