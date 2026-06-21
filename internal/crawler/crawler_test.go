@@ -581,7 +581,7 @@ func TestHandleContent_PartialErrorFormat(t *testing.T) {
 	if lastError == nil {
 		t.Fatal("expected non-null last_error for partial failure")
 	}
-	expected := fmt.Sprintf("partial: landed 1 items across 1 pages, failed on page 2: timeout on page 2")
+	expected := "partial: landed 1 items across 1 pages, failed on page 2: timeout on page 2"
 	if *lastError != expected {
 		t.Errorf("last_error = %q\nwant       = %q", *lastError, expected)
 	}

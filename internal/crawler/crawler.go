@@ -390,6 +390,7 @@ func parseVideos(keyword string, items []map[string]any) []map[string]any {
 	return results
 }
 
+//nolint:unused
 func containsAny(s string, subs []string) bool {
 	for _, sub := range subs {
 		for i := 0; i <= len(s)-len(sub); i++ {
