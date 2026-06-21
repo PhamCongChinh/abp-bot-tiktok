@@ -3,7 +3,9 @@ package gologin
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -31,7 +33,8 @@ func (c *Client) Start(profileID string) (string, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("gologin start %s: unexpected status %d", profileID, resp.StatusCode)
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("gologin start %s: unexpected status %d: %s", profileID, resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
 	var result struct {

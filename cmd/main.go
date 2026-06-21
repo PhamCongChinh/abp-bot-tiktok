@@ -24,6 +24,11 @@ func main() {
 
 	log.Info("abp-bot-tiktok starting")
 
+	if len(cfg.TikTokProfileIDs) == 0 {
+		log.Info("TIKTOK_PROFILE_IDS is not set — add at least one GoLogin profile UUID to .env.runtime before starting the TikTok crawler")
+		os.Exit(0)
+	}
+
 	if err := validateConfig(cfg, log); err != nil {
 		log.Fatal("invalid config", zap.Error(err))
 	}
@@ -119,9 +124,7 @@ func validateConfig(cfg *config.Config, log *zap.Logger) error {
 	if cfg.MinIOBucket == "" {
 		missing = append(missing, "MINIO_BUCKET")
 	}
-	if len(cfg.TikTokProfileIDs) == 0 {
-		missing = append(missing, "TIKTOK_PROFILE_IDS (add at least one GoLogin profile UUID before starting the TikTok crawler)")
-	}
+
 	if len(missing) > 0 {
 		for _, m := range missing {
 			log.Error("missing required env var", zap.String("var", m))
