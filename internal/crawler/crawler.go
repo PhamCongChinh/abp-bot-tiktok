@@ -1,16 +1,21 @@
 package crawler
 
 import (
-	"abp-bot-tiktok/internal/models"
-	"abp-bot-tiktok/internal/utils"
-	"abp-bot-tiktok/pkg/config"
+	"context"
 	"fmt"
 	"net/url"
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/playwright-community/playwright-go"
 	"go.uber.org/zap"
+
+	"abp-bot-tiktok/internal/fetcher"
+	"abp-bot-tiktok/internal/landing"
+	"abp-bot-tiktok/internal/utils"
+	"abp-bot-tiktok/pkg/config"
 )
 
 //nolint:unused
@@ -20,19 +25,233 @@ const (
 	oneMonth  = 15 * 24 * 60 * 60
 )
 
+// BrowserConnectFunc connects to a GoLogin-managed Orbita browser via CDP.
+// Injected so that tests can substitute a stub without a real browser.
+type BrowserConnectFunc func(wsUrl string, options ...playwright.BrowserTypeConnectOverCDPOptions) (playwright.Browser, error)
+
+// Crawler orchestrates the claim-loop → Playwright → ContentCrawler → LandingWriter pipeline.
 type Crawler struct {
-	cfg *config.Config
-	log *zap.Logger
+	claimLoop      ClaimLoopIface
+	connectBrowser BrowserConnectFunc
+	writer         WriterIface
+	contentCrawler ContentCrawlerIface
+	pool           *pgxpool.Pool
+	cfg            *config.Config
+	log            *zap.Logger
 }
 
-func New(cfg *config.Config, log *zap.Logger) *Crawler {
-	return &Crawler{cfg: cfg, log: log}
+// New constructs a Crawler for production use (real Playwright).
+func New(
+	claimLoop ClaimLoopIface,
+	pw *playwright.Playwright,
+	writer WriterIface,
+	pool *pgxpool.Pool,
+	cfg *config.Config,
+	log *zap.Logger,
+) *Crawler {
+	contentCrawler := NewTikTokUserContentCrawler(cfg.TikTokContentPageCap, log)
+	return &Crawler{
+		claimLoop:      claimLoop,
+		connectBrowser: pw.Chromium.ConnectOverCDP,
+		writer:         writer,
+		contentCrawler: contentCrawler,
+		pool:           pool,
+		cfg:            cfg,
+		log:            log,
+	}
 }
 
-// crawlKeyword scrapes TikTok search results for the given keyword via an
-// already-connected Playwright page. Retained as dormant dead code — full
-// wiring is done in T11.
-//
+// newWithDeps constructs a Crawler with all dependencies injected (used by tests).
+func newWithDeps(
+	claimLoop ClaimLoopIface,
+	connectBrowser BrowserConnectFunc,
+	writer WriterIface,
+	contentCrawler ContentCrawlerIface,
+	pool *pgxpool.Pool,
+	cfg *config.Config,
+	log *zap.Logger,
+) *Crawler {
+	return &Crawler{
+		claimLoop:      claimLoop,
+		connectBrowser: connectBrowser,
+		writer:         writer,
+		contentCrawler: contentCrawler,
+		pool:           pool,
+		cfg:            cfg,
+		log:            log,
+	}
+}
+
+// Handle processes a batch of claimed fetch requests. Called by ClaimLoop.Run()
+// as the dispatch function.
+func (c *Crawler) Handle(rows []fetcher.FetchRequest) {
+	if len(rows) == 0 {
+		return
+	}
+	ctx := context.Background()
+
+	wsUrl := c.claimLoop.CurrentWsURL()
+	var browser playwright.Browser
+	if c.connectBrowser != nil && wsUrl != "" {
+		var err error
+		browser, err = c.connectBrowser(wsUrl) //nolint:staticcheck
+		if err != nil {
+			c.log.Error("connect browser", zap.String("wsUrl", wsUrl), zap.Error(err))
+			errStr := fmt.Sprintf("browser connect: %s", err)
+			for _, row := range rows {
+				id, parseErr := uuid.Parse(row.ID)
+				if parseErr != nil {
+					c.log.Error("parse row id", zap.String("id", row.ID), zap.Error(parseErr))
+					continue
+				}
+				_ = c.writer.Finalize(ctx, id, "failed", &errStr, 1)
+			}
+			return
+		}
+		defer browser.Close()
+	}
+
+	for _, row := range rows {
+		c.processRow(ctx, browser, row)
+	}
+}
+
+// processRow handles one fetch_request row end-to-end:
+// resolve handle → open page → run content crawler → land items → finalize.
+func (c *Crawler) processRow(ctx context.Context, browser playwright.Browser, row fetcher.FetchRequest) {
+	id, err := uuid.Parse(row.ID)
+	if err != nil {
+		c.log.Error("invalid row id", zap.String("id", row.ID), zap.Error(err))
+		return
+	}
+
+	// Resolve handle from platform_user_id.
+	handle, err := c.resolveHandle(ctx, row.Target)
+	if err != nil {
+		c.log.Warn("resolve handle failed", zap.String("id", row.ID), zap.Error(err))
+		errStr := "handle_unknown"
+		_ = c.writer.Finalize(ctx, id, "failed", &errStr, 1)
+		return
+	}
+
+	// Open a fresh page per row.
+	var page playwright.Page
+	if browser != nil {
+		p, pageErr := browser.NewPage()
+		if pageErr != nil {
+			c.log.Error("new page", zap.String("id", row.ID), zap.Error(pageErr))
+			errStr := fmt.Sprintf("new page: %s", pageErr)
+			_ = c.writer.Finalize(ctx, id, "failed", &errStr, 1)
+			return
+		}
+		defer p.Close()
+		page = p
+	}
+
+	switch row.Scope {
+	case "content":
+		c.handleContent(ctx, id, page, handle, row)
+	default:
+		c.log.Warn("unknown scope", zap.String("scope", row.Scope), zap.String("id", row.ID))
+		errStr := fmt.Sprintf("unknown scope: %s", row.Scope)
+		_ = c.writer.Finalize(ctx, id, "failed", &errStr, 1)
+	}
+}
+
+// handleContent runs TikTokUserContentCrawler and lands results.
+func (c *Crawler) handleContent(ctx context.Context, id uuid.UUID, page playwright.Page, handle string, row fetcher.FetchRequest) {
+	items, pagesCompleted, crawlErr := c.contentCrawler.Crawl(ctx, page, handle)
+
+	if crawlErr != nil && len(items) == 0 {
+		// Full failure — nothing was scraped.
+		errStr := crawlErr.Error()
+		_ = c.writer.Finalize(ctx, id, "failed", &errStr, 1)
+		return
+	}
+
+	// Land each item — count successful landings.
+	landedCount := 0
+	for _, item := range items {
+		li := landing.LandingItem{
+			SourceID:       c.cfg.SourceID,
+			Platform:       "tiktok",
+			EntityKind:     "content",
+			SourceRecordID: item.SourceRecordID,
+			RawBytes:       item.RawBytes,
+			FetchedAt:      item.FetchedAt,
+			Envelope:       buildEnvelope(row.Target, row.Scope),
+		}
+		if err := c.writer.Land(ctx, li); err != nil {
+			c.log.Warn("land item failed",
+				zap.String("id", row.ID),
+				zap.String("record_id", item.SourceRecordID),
+				zap.Error(err),
+			)
+			continue
+		}
+		landedCount++
+	}
+
+	if landedCount == 0 {
+		// Nothing successfully landed.
+		var errStr string
+		if crawlErr != nil {
+			errStr = crawlErr.Error()
+		} else {
+			errStr = "all items failed to land"
+		}
+		_ = c.writer.Finalize(ctx, id, "failed", &errStr, 1)
+		return
+	}
+
+	if crawlErr != nil {
+		// Partial success — some items landed but pagination failed.
+		errStr := fmt.Sprintf("partial: landed %d items across %d pages, failed on page %d: %s",
+			landedCount, pagesCompleted, pagesCompleted+1, crawlErr)
+		_ = c.writer.Finalize(ctx, id, "landed", &errStr, 0)
+		return
+	}
+
+	// Full success.
+	_ = c.writer.Finalize(ctx, id, "landed", nil, 0)
+}
+
+// resolveHandle queries canonical.social_account for the TikTok handle.
+func (c *Crawler) resolveHandle(ctx context.Context, target string) (string, error) {
+	var handle *string
+	err := c.pool.QueryRow(ctx, `
+		SELECT handle
+		FROM canonical.social_account
+		WHERE platform = 'tiktok' AND platform_user_id = $1
+	`, target).Scan(&handle)
+	if err != nil {
+		return "", fmt.Errorf("query handle for %s: %w", target, err)
+	}
+	if handle == nil || *handle == "" {
+		return "", fmt.Errorf("null handle for target %s", target)
+	}
+	return *handle, nil
+}
+
+// buildEnvelope constructs the FetchEnvelope-compatible JSON object.
+func buildEnvelope(target, scope string) map[string]any {
+	return map[string]any{
+		"status": "ok",
+		"request": map[string]any{
+			"target": target,
+			"scope":  scope,
+		},
+		"provenance": map[string]any{
+			"source_nature": "scraper",
+			"confidence":    0.7,
+		},
+		"rate_limit": nil,
+		"error":      nil,
+	}
+}
+
+// ---- dormant crawlKeyword (keyword-search path, not wired in F6) ----
+
 //nolint:unused
 func (c *Crawler) crawlKeyword(page playwright.Page, keyword string, log *zap.Logger, tag string) {
 	startTime := time.Now()
@@ -149,40 +368,24 @@ func (c *Crawler) crawlKeyword(page playwright.Page, keyword string, log *zap.Lo
 	items := collectedItems
 	mu.Unlock()
 
-	results := parseVideos(keyword, items)
+	_ = parseVideos(keyword, items)
 
 	duration := time.Since(startTime)
-	log.Sugar().Infof("%s   %q -> %d videos | ⏱️ %s", tag, keyword, len(results), duration.Round(time.Second))
+	log.Sugar().Infof("%s   %q -> %d videos | ⏱️ %s", tag, keyword, len(collectedItems), duration.Round(time.Second))
 }
 
 //nolint:unused
-func parseVideos(keyword string, items []map[string]any) []models.VideoItem {
+func parseVideos(keyword string, items []map[string]any) []map[string]any {
 	nowTs := time.Now().Unix()
 	cutoff := nowTs - oneMonth
-	var results []models.VideoItem
+	var results []map[string]any
 
 	for _, item := range items {
 		pubTime := int64(toFloat(item["createTime"]))
 		if pubTime < cutoff {
 			continue
 		}
-		author, _ := item["author"].(map[string]any)
-		stats, _ := item["stats"].(map[string]any)
-
-		results = append(results, models.VideoItem{
-			Keyword:     keyword,
-			VideoID:     toString(item["id"]),
-			Description: toString(item["desc"]),
-			PubTime:     pubTime,
-			UniqueID:    toString(mapGet(author, "uniqueId")),
-			AuthID:      toString(mapGet(author, "id")),
-			AuthName:    toString(mapGet(author, "nickname")),
-			Comments:    int64(toFloat(mapGet(stats, "commentCount"))),
-			Shares:      int64(toFloat(mapGet(stats, "shareCount"))),
-			Reactions:   int64(toFloat(mapGet(stats, "diggCount"))),
-			Favors:      int64(toFloat(mapGet(stats, "collectCount"))),
-			Views:       int64(toFloat(mapGet(stats, "playCount"))),
-		})
+		results = append(results, item)
 	}
 	return results
 }
@@ -199,7 +402,6 @@ func containsAny(s string, subs []string) bool {
 	return false
 }
 
-//nolint:unused
 func toString(v any) string {
 	if v == nil {
 		return ""
@@ -210,7 +412,6 @@ func toString(v any) string {
 	return fmt.Sprintf("%v", v)
 }
 
-//nolint:unused
 func toFloat(v any) float64 {
 	if v == nil {
 		return 0
@@ -221,7 +422,6 @@ func toFloat(v any) float64 {
 	return 0
 }
 
-//nolint:unused
 func mapGet(m map[string]any, key string) any {
 	if m == nil {
 		return nil
