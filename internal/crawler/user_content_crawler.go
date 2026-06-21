@@ -51,6 +51,12 @@ func (c *TikTokUserContentCrawler) Crawl(ctx context.Context, page playwright.Pa
 			}
 			var body map[string]any
 			if err := json.Unmarshal(rawBytes, &body); err != nil {
+				c.log.Warn("parse body failed",
+					zap.String("url", res.URL()),
+					zap.Int("body_len", len(rawBytes)),
+					zap.String("body_prefix", string(rawBytes[:min(200, len(rawBytes))])),
+					zap.Error(err),
+				)
 				batches <- contentBatch{err: fmt.Errorf("parse body: %w", err)}
 				return
 			}
