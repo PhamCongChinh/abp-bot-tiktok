@@ -4,30 +4,40 @@ TikTok crawler bot written in Go with Playwright. Part of the self-hosted crawle
 
 ## Architecture
 
-This repo depends on infrastructure services provided by `instagram-crawler`:
+Shared infrastructure (postgres, minio, gologin-launcher, crawler-net) is defined in the
+workspace-level `docker-compose.yml` (kolsquare root). There is no per-repo compose file.
 
-- **`gologin-launcher`** — GoLogin sidecar (Chrome profile manager). TikTok crawler claims profiles from it after every batch.
-- **`postgres`** — Shared Postgres instance. The `raw.fetch_request` claim loop reads from this.
-- **`minio`** — Shared MinIO instance. Landing results are written here.
-- **`crawler-net`** — Shared Docker network. All services must be on this network.
+- **`gologin-launcher`** — GoLogin sidecar (Chrome profile manager). Profile rotation happens after every non-empty poll batch.
+- **`postgres`** — Shared Postgres. `raw.fetch_request` claim loop reads from here.
+- **`minio`** — Shared MinIO. Landing payloads are written here.
+- **`crawler-net`** — Shared Docker network.
+
+## Database dependency
+
+**Requires kol-data-platform Alembic migration `0003` or later.**
+
+Schema is owned by `kol-data-platform` — this crawler does not run its own migrations.
+The service will refuse to start and print a clear error if the DB is behind.
+
+To apply migrations:
+```bash
+cd kol-data-platform
+alembic upgrade head   # or: make migrate
+```
 
 ## Quick start
 
-> **Both repos must be cloned and the IG stack must be started before running the TikTok stack.**
-
 ```bash
-# 1. Start the instagram-crawler stack first (creates the shared network + services)
-cd ../instagram-crawler
-docker compose up -d
+# From the kolsquare workspace root:
 
-# 2. Copy the example env and fill in your values
-cd ../abp-bot-tiktok
-cp .env.example .env
-# Edit .env — set TIKTOK_PROFILE_IDS, POSTGRES_DSN, MINIO_* values
+# Infra + TikTok crawler:
+docker compose --profile tiktok up
 
-# 3. Start the TikTok crawler
-docker compose up -d
+# Both crawlers:
+docker compose --profile instagram --profile tiktok up
 ```
+
+See `kolsquare/.env.runtime` for required secrets (GoLogin token, TIKTOK_PROFILE_IDS, etc.).
 
 ## Structure
 

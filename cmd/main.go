@@ -35,6 +35,8 @@ func main() {
 	}
 	defer pool.Close()
 
+	checkSchemaVersion(context.Background(), pool, log)
+
 	// MinIO landing writer.
 	minioEndpoint := strings.TrimPrefix(cfg.MinIOEndpoint, "http://")
 	minioEndpoint = strings.TrimPrefix(minioEndpoint, "https://")
@@ -68,6 +70,39 @@ func main() {
 	)
 
 	claimLoop.Run(c.Handle)
+}
+
+const requiredMigration = "0003"
+
+func checkSchemaVersion(ctx context.Context, pool *pgxpool.Pool, log *zap.Logger) {
+	var version string
+	err := pool.QueryRow(ctx,
+		`SELECT version_num FROM alembic_version WHERE version_num = $1`,
+		requiredMigration,
+	).Scan(&version)
+	if err != nil {
+		// Collect whatever revisions are actually applied for a useful error message.
+		var applied []string
+		if rows, qErr := pool.Query(ctx, `SELECT version_num FROM alembic_version`); qErr == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var v string
+				if rows.Scan(&v) == nil {
+					applied = append(applied, v)
+				}
+			}
+		}
+		current := strings.Join(applied, ", ")
+		if current == "" {
+			current = "(none — migrations may not have run)"
+		}
+		log.Fatal("schema version check failed",
+			zap.String("required", requiredMigration),
+			zap.String("applied", current),
+			zap.String("fix", "run `alembic upgrade head` in kol-data-platform"),
+		)
+	}
+	log.Info("schema version ok", zap.String("revision", version))
 }
 
 func validateConfig(cfg *config.Config, log *zap.Logger) error {
