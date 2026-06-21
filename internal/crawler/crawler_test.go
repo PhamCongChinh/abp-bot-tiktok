@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/playwright-community/playwright-go"
 	"go.uber.org/zap"
@@ -544,22 +543,8 @@ func TestHandleContent_PartialErrorFormat(t *testing.T) {
 
 	// 1 page completed, then pagination fails.
 	row := fetcher.FetchRequest{ID: rowID, Target: target, Scope: "content", SourceID: sourceID}
-	id, _ := uuid.Parse(rowID)
 
 	cfg := testCrawlerConfig(sourceID)
-	c := &Crawler{pool: pool, writer: writer, cfg: cfg, log: zap.NewNop()}
-
-	// Inject the partial failure directly via handleContent.
-	// pagesCompleted=1, crawlErr non-nil, items has 1 item.
-	c.handleContent(ctx, id, nil, handle, row)
-
-	// Without crawl error, single item → status='landed'.
-	var status string
-	_ = pool.QueryRow(ctx, `SELECT status FROM raw.fetch_request WHERE id::text=$1`, rowID).Scan(&status)
-
-	// Now test actual partial: reset fetch_request status and re-run with a crawl error.
-	_, _ = pool.Exec(ctx, `UPDATE raw.fetch_request SET status='claimed' WHERE id::text=$1`, rowID)
-	_, _ = pool.Exec(ctx, `DELETE FROM raw.record WHERE source_id=$1`, sourceID)
 
 	// Re-use via handleContent with injected crawl error logic via stubContentCrawler.
 	stub := &stubClaimLoop{
