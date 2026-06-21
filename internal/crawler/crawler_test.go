@@ -636,6 +636,19 @@ func TestCrawler_HappyPath_ProfileScope(t *testing.T) {
 		t.Errorf("expected 1 profile raw.record row, got %d", count)
 	}
 
+	// Spot-check: assert the correct source_record_id was landed.
+	var srcRecordID string
+	if err := pool.QueryRow(ctx,
+		`SELECT source_record_id FROM raw.record
+		 WHERE source_id=$1 AND entity_kind='profile' AND process_status='landed'`,
+		sourceID,
+	).Scan(&srcRecordID); err != nil {
+		t.Fatalf("query source_record_id: %v", err)
+	}
+	if srcRecordID != "uid001" {
+		t.Errorf("source_record_id = %q, want %q", srcRecordID, "uid001")
+	}
+
 	// Assert fetch_request.status='landed'.
 	var status string
 	var lastError *string

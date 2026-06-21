@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/playwright-community/playwright-go"
@@ -52,22 +53,25 @@ func (c *TikTokProfileCrawler) Crawl(ctx context.Context, page playwright.Page, 
 	result := make(chan *ProfileItem, 1)
 	errCh := make(chan error, 1)
 
+	var once sync.Once
 	page.On("response", func(res playwright.Response) {
 		if !strings.Contains(res.URL(), userDetailAPI) {
 			return
 		}
 		go func(res playwright.Response) {
-			rawBytes, err := res.Body()
-			if err != nil {
-				errCh <- fmt.Errorf("response body: %w", err)
-				return
-			}
-			item, err := extractProfileItem(rawBytes)
-			if err != nil {
-				errCh <- err
-				return
-			}
-			result <- item
+			once.Do(func() {
+				rawBytes, err := res.Body()
+				if err != nil {
+					errCh <- fmt.Errorf("response body: %w", err)
+					return
+				}
+				item, err := extractProfileItem(rawBytes)
+				if err != nil {
+					errCh <- err
+					return
+				}
+				result <- item
+			})
 		}(res)
 	})
 
