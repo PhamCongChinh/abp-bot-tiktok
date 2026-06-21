@@ -30,11 +30,11 @@ alembic upgrade head   # or: make migrate
 ```bash
 # From the kolsquare workspace root:
 
-# Infra + TikTok crawler:
-docker compose --profile tiktok up
+# Everything — infra + both crawlers:
+docker compose up
 
-# Both crawlers:
-docker compose --profile instagram --profile tiktok up
+# Instagram only (skip TikTok crawler):
+docker compose up --scale tiktok-crawler=0
 ```
 
 See `kolsquare/.env.runtime` for required secrets (GoLogin token, TIKTOK_PROFILE_IDS, etc.).
