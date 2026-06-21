@@ -245,8 +245,8 @@ func TestFinalize_Success(t *testing.T) {
 	// Insert a minimal fetch_request row to update.
 	_, err := pool.Exec(ctx, `
 		INSERT INTO raw.fetch_request
-			(id, source_id, platform, scope, target, status, attempts)
-		VALUES ($1, 'scraper_tiktok', 'tiktok', 'content', 'tgt_finalize_ok', 'claimed', 0)
+			(id, source_id, platform, scope, target, target_kind, idempotency_key, status, attempts)
+		VALUES ($1, 'scraper_tiktok', 'tiktok', 'content', 'tgt_finalize_ok', 'platform_user_id', gen_random_uuid()::text, 'claimed', 0)
 		ON CONFLICT (id) DO NOTHING`,
 		rowID,
 	)
@@ -286,8 +286,8 @@ func TestFinalize_Error(t *testing.T) {
 	rowID := uuid.New()
 	_, err := pool.Exec(ctx, `
 		INSERT INTO raw.fetch_request
-			(id, source_id, platform, scope, target, status, attempts)
-		VALUES ($1, 'scraper_tiktok', 'tiktok', 'content', 'tgt_finalize_err', 'claimed', 2)
+			(id, source_id, platform, scope, target, target_kind, idempotency_key, status, attempts)
+		VALUES ($1, 'scraper_tiktok', 'tiktok', 'content', 'tgt_finalize_err', 'platform_user_id', gen_random_uuid()::text, 'claimed', 2)
 		ON CONFLICT (id) DO NOTHING`,
 		rowID,
 	)

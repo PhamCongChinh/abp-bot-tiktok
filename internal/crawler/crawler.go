@@ -113,7 +113,7 @@ func (c *Crawler) Handle(rows []fetcher.FetchRequest) {
 			}
 			return
 		}
-		defer browser.Close()
+		defer browser.Disconnect()
 	}
 
 	for _, row := range rows {

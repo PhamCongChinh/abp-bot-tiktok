@@ -72,8 +72,8 @@ func seedFetchRequest(t *testing.T, pool *pgxpool.Pool, sourceID string) string 
 	var id string
 	err := pool.QueryRow(context.Background(), `
 		INSERT INTO raw.fetch_request
-			(source_id, target, scope, status)
-		VALUES ($1, 'test_target', 'content', 'queued')
+			(source_id, platform, target, scope, target_kind, idempotency_key, status)
+		VALUES ($1, 'tiktok', 'test_target', 'content', 'platform_user_id', gen_random_uuid()::text, 'queued')
 		RETURNING id::text
 	`, sourceID).Scan(&id)
 	if err != nil {
