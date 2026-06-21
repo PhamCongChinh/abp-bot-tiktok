@@ -29,12 +29,13 @@ const (
 // Injected so that tests can substitute a stub without a real browser.
 type BrowserConnectFunc func(wsUrl string, options ...playwright.BrowserTypeConnectOverCDPOptions) (playwright.Browser, error)
 
-// Crawler orchestrates the claim-loop → Playwright → ContentCrawler → LandingWriter pipeline.
+// Crawler orchestrates the claim-loop → Playwright → ContentCrawler/ProfileCrawler → LandingWriter pipeline.
 type Crawler struct {
 	claimLoop      ClaimLoopIface
 	connectBrowser BrowserConnectFunc
 	writer         WriterIface
 	contentCrawler ContentCrawlerIface
+	profileCrawler ProfileCrawlerIface
 	pool           *pgxpool.Pool
 	cfg            *config.Config
 	log            *zap.Logger
@@ -50,11 +51,13 @@ func New(
 	log *zap.Logger,
 ) *Crawler {
 	contentCrawler := NewTikTokUserContentCrawler(cfg.TikTokContentPageCap, log)
+	profileCrawler := NewTikTokProfileCrawler(log)
 	return &Crawler{
 		claimLoop:      claimLoop,
 		connectBrowser: pw.Chromium.ConnectOverCDP,
 		writer:         writer,
 		contentCrawler: contentCrawler,
+		profileCrawler: profileCrawler,
 		pool:           pool,
 		cfg:            cfg,
 		log:            log,
@@ -67,6 +70,7 @@ func newWithDeps(
 	connectBrowser BrowserConnectFunc,
 	writer WriterIface,
 	contentCrawler ContentCrawlerIface,
+	profileCrawler ProfileCrawlerIface,
 	pool *pgxpool.Pool,
 	cfg *config.Config,
 	log *zap.Logger,
@@ -76,6 +80,7 @@ func newWithDeps(
 		connectBrowser: connectBrowser,
 		writer:         writer,
 		contentCrawler: contentCrawler,
+		profileCrawler: profileCrawler,
 		pool:           pool,
 		cfg:            cfg,
 		log:            log,
@@ -151,6 +156,8 @@ func (c *Crawler) processRow(ctx context.Context, browser playwright.Browser, ro
 	switch row.Scope {
 	case "content":
 		c.handleContent(ctx, id, page, handle, row)
+	case "profile":
+		c.handleProfile(ctx, id, page, handle, row)
 	default:
 		c.log.Warn("unknown scope", zap.String("scope", row.Scope), zap.String("id", row.ID))
 		errStr := fmt.Sprintf("unknown scope: %s", row.Scope)
@@ -213,6 +220,34 @@ func (c *Crawler) handleContent(ctx context.Context, id uuid.UUID, page playwrig
 	}
 
 	// Full success.
+	_ = c.writer.Finalize(ctx, id, "landed", nil, 0)
+}
+
+// handleProfile runs TikTokProfileCrawler and lands the profile record.
+func (c *Crawler) handleProfile(ctx context.Context, id uuid.UUID, page playwright.Page, handle string, row fetcher.FetchRequest) {
+	item, err := c.profileCrawler.Crawl(ctx, page, handle)
+	if err != nil {
+		errStr := err.Error()
+		_ = c.writer.Finalize(ctx, id, "failed", &errStr, 1)
+		return
+	}
+
+	li := landing.LandingItem{
+		SourceID:       c.cfg.SourceID,
+		Platform:       "tiktok",
+		EntityKind:     "profile",
+		SourceRecordID: item.SourceRecordID,
+		RawBytes:       item.RawBytes,
+		FetchedAt:      item.FetchedAt,
+		Envelope:       buildEnvelope(row.Target, row.Scope),
+	}
+	if err := c.writer.Land(ctx, li); err != nil {
+		c.log.Warn("land profile failed", zap.String("id", row.ID), zap.Error(err))
+		errStr := err.Error()
+		_ = c.writer.Finalize(ctx, id, "failed", &errStr, 1)
+		return
+	}
+
 	_ = c.writer.Finalize(ctx, id, "landed", nil, 0)
 }
 

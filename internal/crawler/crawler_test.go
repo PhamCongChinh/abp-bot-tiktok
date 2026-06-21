@@ -43,6 +43,16 @@ func (s *stubContentCrawler) Crawl(_ context.Context, _ playwright.Page, _ strin
 	return s.items, s.pagesComplete, s.err
 }
 
+// stubProfileCrawler satisfies ProfileCrawlerIface with canned responses.
+type stubProfileCrawler struct {
+	item *ProfileItem
+	err  error
+}
+
+func (s *stubProfileCrawler) Crawl(_ context.Context, _ playwright.Page, _ string) (*ProfileItem, error) {
+	return s.item, s.err
+}
+
 // ---- helpers ----
 
 func openTestPool(t *testing.T) *pgxpool.Pool {
@@ -177,7 +187,7 @@ func TestCrawler_HappyPath_ContentScope(t *testing.T) {
 		wsURL: "ws://stub:9999",
 	}
 	contentStub := &stubContentCrawler{items: items, pagesComplete: 1}
-	c := newWithDeps(stub, nil, writer, contentStub, pool, testCrawlerConfig(sourceID), zaptest.NewLogger(t))
+	c := newWithDeps(stub, nil, writer, contentStub, nil, pool, testCrawlerConfig(sourceID), zaptest.NewLogger(t))
 	c.Handle(stub.rows)
 
 	// Assert two raw.record rows with process_status='landed'.
@@ -226,7 +236,7 @@ func TestCrawler_NullHandle(t *testing.T) {
 		wsURL: "ws://stub:9999",
 	}
 	contentStub := &stubContentCrawler{}
-	c := newWithDeps(stub, nil, writer, contentStub, pool, testCrawlerConfig(sourceID), zap.NewNop())
+	c := newWithDeps(stub, nil, writer, contentStub, nil, pool, testCrawlerConfig(sourceID), zap.NewNop())
 	c.Handle(stub.rows)
 
 	var status string
@@ -271,7 +281,7 @@ func TestCrawler_PartialPaginationFailure(t *testing.T) {
 		pagesComplete: 1,
 		err:           fmt.Errorf("scroll timeout on page 2"),
 	}
-	c := newWithDeps(stub, nil, writer, contentStub, pool, testCrawlerConfig(sourceID), zap.NewNop())
+	c := newWithDeps(stub, nil, writer, contentStub, nil, pool, testCrawlerConfig(sourceID), zap.NewNop())
 	c.Handle(stub.rows)
 
 	// First batch's raw.record row should be present.
@@ -322,7 +332,7 @@ func TestCrawler_FullCrawlFailure(t *testing.T) {
 		wsURL: "ws://stub:9999",
 	}
 	contentStub := &stubContentCrawler{err: fmt.Errorf("navigate failed: timeout")}
-	c := newWithDeps(stub, nil, writer, contentStub, pool, testCrawlerConfig(sourceID), zap.NewNop())
+	c := newWithDeps(stub, nil, writer, contentStub, nil, pool, testCrawlerConfig(sourceID), zap.NewNop())
 	c.Handle(stub.rows)
 
 	var status string
@@ -556,7 +566,7 @@ func TestHandleContent_PartialErrorFormat(t *testing.T) {
 		pagesComplete: 1,
 		err:           fmt.Errorf("timeout on page 2"),
 	}
-	c2 := newWithDeps(stub, nil, writer, contentStub, pool, cfg, zap.NewNop())
+	c2 := newWithDeps(stub, nil, writer, contentStub, nil, pool, cfg, zap.NewNop())
 	c2.Handle(stub.rows)
 
 	var lastError *string
@@ -569,5 +579,220 @@ func TestHandleContent_PartialErrorFormat(t *testing.T) {
 	expected := "partial: landed 1 items across 1 pages, failed on page 2: timeout on page 2"
 	if *lastError != expected {
 		t.Errorf("last_error = %q\nwant       = %q", *lastError, expected)
+	}
+}
+
+// ---- profile scope tests ----
+
+// TestCrawler_HappyPath_ProfileScope seeds a fetch_request with scope='profile',
+// runs Crawler with a stub returning a profile item, and asserts one raw.record
+// with entity_kind='profile' and process_status='landed'.
+func TestCrawler_HappyPath_ProfileScope(t *testing.T) {
+	pool := openTestPool(t)
+	writer := openTestWriter(t, pool)
+	ctx := context.Background()
+
+	sourceID := "scraper_tiktok_T12_happy"
+	target := "tt_uid_profile_001"
+	handle := "profile_user_001"
+
+	seedSocialAccount(t, pool, target, handle)
+	rowID := seedFetchRequest(t, pool, sourceID, target, "profile")
+	cleanupRecords(t, pool, sourceID)
+
+	rawBytes := []byte(`{"userInfo":{"user":{"id":"uid001","uniqueId":"profile_user_001","nickname":"Profile User","signature":"bio here","verified":true,"secUid":"su001"},"stats":{"followerCount":10000,"followingCount":500,"heartCount":50000,"videoCount":100}}}`)
+	profileItem := &ProfileItem{
+		SourceRecordID: "uid001",
+		UniqueID:       "profile_user_001",
+		Nickname:       "Profile User",
+		Signature:      "bio here",
+		Verified:       true,
+		SecUID:         "su001",
+		FollowerCount:  10000,
+		FollowingCount: 500,
+		HeartCount:     50000,
+		VideoCount:     100,
+		RawBytes:       rawBytes,
+		FetchedAt:      time.Now().UTC(),
+	}
+
+	stub := &stubClaimLoop{
+		rows:  []fetcher.FetchRequest{{ID: rowID, Target: target, Scope: "profile", SourceID: sourceID}},
+		wsURL: "ws://stub:9999",
+	}
+	contentStub := &stubContentCrawler{}
+	profileStub := &stubProfileCrawler{item: profileItem}
+	c := newWithDeps(stub, nil, writer, contentStub, profileStub, pool, testCrawlerConfig(sourceID), zaptest.NewLogger(t))
+	c.Handle(stub.rows)
+
+	// Assert exactly one raw.record row with entity_kind='profile' and process_status='landed'.
+	var count int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM raw.record WHERE source_id=$1 AND entity_kind='profile' AND process_status='landed'`, sourceID,
+	).Scan(&count); err != nil {
+		t.Fatalf("query raw.record: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("expected 1 profile raw.record row, got %d", count)
+	}
+
+	// Spot-check: assert the correct source_record_id was landed.
+	var srcRecordID string
+	if err := pool.QueryRow(ctx,
+		`SELECT source_record_id FROM raw.record
+		 WHERE source_id=$1 AND entity_kind='profile' AND process_status='landed'`,
+		sourceID,
+	).Scan(&srcRecordID); err != nil {
+		t.Fatalf("query source_record_id: %v", err)
+	}
+	if srcRecordID != "uid001" {
+		t.Errorf("source_record_id = %q, want %q", srcRecordID, "uid001")
+	}
+
+	// Assert fetch_request.status='landed'.
+	var status string
+	var lastError *string
+	if err := pool.QueryRow(ctx,
+		`SELECT status, last_error FROM raw.fetch_request WHERE id::text=$1`, rowID,
+	).Scan(&status, &lastError); err != nil {
+		t.Fatalf("query fetch_request: %v", err)
+	}
+	if status != "landed" {
+		t.Errorf("status = %q, want %q", status, "landed")
+	}
+	if lastError != nil {
+		t.Errorf("last_error = %q, want NULL", *lastError)
+	}
+}
+
+// TestCrawler_ProfileScope_CrawlError verifies crawl error → status='failed'.
+func TestCrawler_ProfileScope_CrawlError(t *testing.T) {
+	pool := openTestPool(t)
+	writer := openTestWriter(t, pool)
+	ctx := context.Background()
+
+	sourceID := "scraper_tiktok_T12_crawlerr"
+	target := "tt_uid_profile_err"
+	handle := "profile_err_user"
+
+	seedSocialAccount(t, pool, target, handle)
+	rowID := seedFetchRequest(t, pool, sourceID, target, "profile")
+
+	stub := &stubClaimLoop{
+		rows:  []fetcher.FetchRequest{{ID: rowID, Target: target, Scope: "profile", SourceID: sourceID}},
+		wsURL: "ws://stub:9999",
+	}
+	contentStub := &stubContentCrawler{}
+	profileStub := &stubProfileCrawler{err: fmt.Errorf("timeout waiting for /api/user/detail/ response")}
+	c := newWithDeps(stub, nil, writer, contentStub, profileStub, pool, testCrawlerConfig(sourceID), zap.NewNop())
+	c.Handle(stub.rows)
+
+	var status string
+	var lastError *string
+	if err := pool.QueryRow(ctx,
+		`SELECT status, last_error FROM raw.fetch_request WHERE id::text=$1`, rowID,
+	).Scan(&status, &lastError); err != nil {
+		t.Fatalf("query fetch_request: %v", err)
+	}
+	if status != "failed" {
+		t.Errorf("status = %q, want %q", status, "failed")
+	}
+	if lastError == nil {
+		t.Error("last_error should be non-null on profile crawl failure")
+	}
+}
+
+// ---- unit tests for extractProfileItem ----
+
+// TestExtractProfileItem_HappyPath verifies parsing a /api/user/detail/ response.
+func TestExtractProfileItem_HappyPath(t *testing.T) {
+	raw := []byte(`{
+		"userInfo": {
+			"user": {
+				"id": "123456789",
+				"uniqueId": "testuser",
+				"nickname": "Test User",
+				"signature": "this is my bio",
+				"verified": true,
+				"secUid": "sec_abc123"
+			},
+			"stats": {
+				"followerCount": 100000,
+				"followingCount": 200,
+				"heartCount": 5000000,
+				"videoCount": 300
+			}
+		}
+	}`)
+
+	item, err := extractProfileItem(raw)
+	if err != nil {
+		t.Fatalf("extractProfileItem: %v", err)
+	}
+	if item.SourceRecordID != "123456789" {
+		t.Errorf("SourceRecordID = %q, want %q", item.SourceRecordID, "123456789")
+	}
+	if item.UniqueID != "testuser" {
+		t.Errorf("UniqueID = %q, want %q", item.UniqueID, "testuser")
+	}
+	if item.Nickname != "Test User" {
+		t.Errorf("Nickname = %q, want %q", item.Nickname, "Test User")
+	}
+	if item.Signature != "this is my bio" {
+		t.Errorf("Signature = %q, want %q", item.Signature, "this is my bio")
+	}
+	if !item.Verified {
+		t.Error("Verified should be true")
+	}
+	if item.SecUID != "sec_abc123" {
+		t.Errorf("SecUID = %q, want %q", item.SecUID, "sec_abc123")
+	}
+	if item.FollowerCount != 100000 {
+		t.Errorf("FollowerCount = %d, want 100000", item.FollowerCount)
+	}
+	if item.FollowingCount != 200 {
+		t.Errorf("FollowingCount = %d, want 200", item.FollowingCount)
+	}
+	if item.HeartCount != 5000000 {
+		t.Errorf("HeartCount = %d, want 5000000", item.HeartCount)
+	}
+	if item.VideoCount != 300 {
+		t.Errorf("VideoCount = %d, want 300", item.VideoCount)
+	}
+	if string(item.RawBytes) != string(raw) {
+		t.Error("RawBytes should equal the full response body")
+	}
+}
+
+// TestExtractProfileItem_MissingUserInfo verifies error on missing userInfo.
+func TestExtractProfileItem_MissingUserInfo(t *testing.T) {
+	raw := []byte(`{"status_code": 0}`)
+	_, err := extractProfileItem(raw)
+	if err == nil {
+		t.Fatal("expected error for missing userInfo, got nil")
+	}
+}
+
+// TestExtractProfileItem_EmptyID verifies error when user.id is empty.
+func TestExtractProfileItem_EmptyID(t *testing.T) {
+	raw := []byte(`{"userInfo":{"user":{"id":"","uniqueId":"x"},"stats":{}}}`)
+	_, err := extractProfileItem(raw)
+	if err == nil {
+		t.Fatal("expected error for empty user.id, got nil")
+	}
+}
+
+// TestExtractProfileItem_UnverifiedUser verifies verified=false is handled.
+func TestExtractProfileItem_UnverifiedUser(t *testing.T) {
+	raw := []byte(`{"userInfo":{"user":{"id":"uid_unverified","uniqueId":"u","nickname":"N","signature":"S","verified":false,"secUid":"su"},"stats":{"followerCount":1,"followingCount":1,"heartCount":1,"videoCount":1}}}`)
+	item, err := extractProfileItem(raw)
+	if err != nil {
+		t.Fatalf("extractProfileItem: %v", err)
+	}
+	if item.Verified {
+		t.Error("Verified should be false")
+	}
+	if item.SourceRecordID != "uid_unverified" {
+		t.Errorf("SourceRecordID = %q, want %q", item.SourceRecordID, "uid_unverified")
 	}
 }
