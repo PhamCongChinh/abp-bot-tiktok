@@ -74,6 +74,29 @@ func (c *TikTokUserContentCrawler) Crawl(ctx context.Context, page playwright.Pa
 		return nil, 0, fmt.Errorf("navigate to @%s: %w", handle, err)
 	}
 
+	// Debug: log JS-visible login signals and all cookies (including httpOnly) from context.
+	if dbg, evalErr := page.Evaluate(`() => ({
+		webdriver: navigator.webdriver,
+		hasCookies: document.cookie.length > 0,
+		cookieKeys: document.cookie.split(';').map(c => c.trim().split('=')[0]).filter(Boolean),
+		hasChrome: typeof window.chrome !== 'undefined',
+		userAgent: navigator.userAgent.slice(0, 80),
+	})`); evalErr == nil {
+		c.log.Info("page debug", zap.Any("signals", dbg))
+	} else {
+		c.log.Warn("page debug eval failed", zap.Error(evalErr))
+	}
+	// Dump all cookies (including httpOnly) from the Playwright browser context.
+	if cookies, cookieErr := page.Context().Cookies("https://www.tiktok.com"); cookieErr == nil {
+		cookieNames := make([]string, 0, len(cookies))
+		for _, ck := range cookies {
+			cookieNames = append(cookieNames, ck.Name)
+		}
+		c.log.Info("context cookies", zap.Int("total", len(cookies)), zap.Strings("names", cookieNames))
+	} else {
+		c.log.Warn("context cookies fetch failed", zap.Error(cookieErr))
+	}
+
 	utils.Sleep(3000, 5000)
 
 	var allItems []ContentItem

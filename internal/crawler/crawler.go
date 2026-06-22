@@ -114,6 +114,40 @@ func (c *Crawler) Handle(rows []fetcher.FetchRequest) {
 			return
 		}
 		defer browser.Close()
+
+		// Patch navigator.webdriver → undefined in GoLogin's existing browser context
+		// before any page is created. Runs before TikTok JS so automation cannot be detected.
+		if bCtxs := browser.Contexts(); len(bCtxs) > 0 {
+			stealthJS := `` +
+				`try { Object.defineProperty(navigator, 'webdriver', { get: () => undefined, configurable: true }); } catch(e) {}` +
+				`try { delete navigator.__proto__.webdriver; } catch(e) {}` +
+				`if (!window.chrome) { window.chrome = { runtime: {}, loadTimes: function() {}, csi: function() {}, app: {} }; }`
+			if sErr := bCtxs[0].AddInitScript(playwright.Script{Content: playwright.String(stealthJS)}); sErr != nil {
+				c.log.Warn("stealth init script failed", zap.Error(sErr))
+			} else {
+				c.log.Info("stealth init script injected", zap.Int("contexts", len(bCtxs)))
+			}
+		} else {
+			c.log.Warn("no browser contexts found — stealth patch skipped")
+		}
+
+		// Confirm sessionid is present BEFORE any navigation — proves cookies loaded from disk.
+		if bCtxs := browser.Contexts(); len(bCtxs) > 0 {
+			if preCookies, err := bCtxs[0].Cookies("https://www.tiktok.com"); err == nil {
+				names := make([]string, 0, len(preCookies))
+				for _, ck := range preCookies {
+					names = append(names, ck.Name)
+				}
+				hasSession := false
+				for _, ck := range preCookies {
+					if ck.Name == "sessionid" {
+						hasSession = true
+						break
+					}
+				}
+				c.log.Info("pre-nav cookies", zap.Int("total", len(preCookies)), zap.Strings("names", names), zap.Bool("has_sessionid", hasSession))
+			}
+		}
 	}
 
 	for _, row := range rows {
