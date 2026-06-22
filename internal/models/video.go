@@ -2,6 +2,7 @@ package models
 
 type VideoItem struct {
 	Keyword     string `json:"keyword"`
+	OrgID       int    `json:"org_id"`
 	VideoID     string `json:"video_id"`
 	Description string `json:"description"`
 	PubTime     int64  `json:"pub_time"`

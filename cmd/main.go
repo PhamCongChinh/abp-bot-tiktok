@@ -2,96 +2,135 @@ package main
 
 import (
 	"abp-bot-tiktok/internal/crawler"
-	"abp-bot-tiktok/internal/repository"
-	"abp-bot-tiktok/internal/scheduler"
+	"abp-bot-tiktok/internal/fetcher"
+	"abp-bot-tiktok/internal/landing"
 	"abp-bot-tiktok/pkg/config"
-	"abp-bot-tiktok/pkg/database"
+	"abp-bot-tiktok/pkg/gologin"
 	"abp-bot-tiktok/pkg/logger"
+	"context"
+	"fmt"
 	"os"
-	"os/signal"
-	"syscall"
+	"strings"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/playwright-community/playwright-go"
 	"go.uber.org/zap"
 )
 
 func main() {
 	cfg := config.Load()
 	log := logger.New(cfg.LogLevel)
-	defer log.Sync()
+	defer func() { _ = log.Sync() }()
 
-	log.Info("Starting abp-bot-tiktok...")
-	log.Sugar().Infof("DEBUG=%v | BotName=%s", cfg.Debug, cfg.BotName)
+	log.Info("abp-bot-tiktok starting")
 
-	// Connect to MongoDB
-	mongoDB, err := database.NewMongoDB(cfg.MongoURI, cfg.MongoDB, log)
-	if err != nil {
-		log.Fatal("Failed to connect MongoDB", zap.Error(err))
-	}
-	defer mongoDB.Close()
-
-	// Init repositories
-	// videoRepo := repository.NewVideoRepository(mongoDB.Database(), log)
-	keywordRepo := repository.NewKeywordRepository(mongoDB.Database(), log)
-
-	// Load keywords from MongoDB by org_ids from .env
-	log.Info("Loading keywords from MongoDB", zap.Ints("org_ids", cfg.OrgIDs))
-
-	keywords, err := keywordRepo.FindByOrgIDs(cfg.OrgIDs)
-	if err != nil {
-		log.Fatal("Failed to load keywords from MongoDB", zap.Error(err))
+	if len(cfg.TikTokProfileIDs) == 0 {
+		log.Info("TIKTOK_PROFILE_IDS is not set — add at least one GoLogin profile UUID to .env.runtime before starting the TikTok crawler")
+		os.Exit(0)
 	}
 
-	log.Info("Keywords loaded from MongoDB",
-		zap.Int("count", len(keywords)),
-		zap.Ints("org_ids", cfg.OrgIDs),
+	if err := validateConfig(cfg, log); err != nil {
+		log.Fatal("invalid config", zap.Error(err))
+	}
+
+	// Postgres pool.
+	pool, err := pgxpool.New(context.Background(), cfg.PostgresDSN)
+	if err != nil {
+		log.Fatal("pgx pool", zap.Error(err))
+	}
+	defer pool.Close()
+
+	checkSchemaVersion(context.Background(), pool, log)
+
+	// MinIO landing writer.
+	minioEndpoint := strings.TrimPrefix(cfg.MinIOEndpoint, "http://")
+	minioEndpoint = strings.TrimPrefix(minioEndpoint, "https://")
+	useSSL := strings.HasPrefix(cfg.MinIOEndpoint, "https://")
+	writer, err := landing.New(pool, minioEndpoint, cfg.MinIOAccessKey, cfg.MinIOSecretKey, cfg.MinIOBucket, useSSL, log)
+	if err != nil {
+		log.Fatal("landing writer", zap.Error(err))
+	}
+
+	// GoLogin client + ClaimLoop.
+	glClient := gologin.New(cfg.GoLoginLauncherURL)
+	claimLoop, err := fetcher.New(cfg, glClient, log)
+	if err != nil {
+		log.Fatal("claim loop", zap.Error(err))
+	}
+
+	// Playwright.
+	pw, err := playwright.Run()
+	if err != nil {
+		log.Fatal("playwright run", zap.Error(err))
+	}
+	defer func() { _ = pw.Stop() }()
+
+	// Crawler.
+	c := crawler.New(claimLoop, pw, writer, pool, cfg, log)
+
+	log.Info("claim loop started",
+		zap.String("source_id", cfg.SourceID),
+		zap.Int("chunk", cfg.ClaimChunk),
+		zap.Int("page_cap", cfg.TikTokContentPageCap),
 	)
 
-	// Build keyword list and group by org_id
-	orgKeywordCount := make(map[int]int)
-	var keywordList []string
-	for _, kw := range keywords {
-		keywordList = append(keywordList, kw.Keyword)
-		orgKeywordCount[kw.OrgID]++
-	}
-
-	log.Info("Keywords distribution by organization:")
-	for orgID, count := range orgKeywordCount {
-		log.Info("", zap.Int("org_id", orgID), zap.Int("keywords", count))
-	}
-
-	if len(keywordList) == 0 {
-		log.Warn("No keywords found for org_ids, exiting", zap.Ints("org_ids", cfg.OrgIDs))
-		return
-	}
-
-	// Set keywords to config (will be reused for all crawl cycles, shuffled each cycle in Run())
-	cfg.Keywords = keywordList
-
-	// Init crawler
-	c := crawler.New(cfg, log, nil)
-	
-	log.Info("Crawler initialized - will crawl same keywords every 1-1.5 hours")
-	
-	runCrawler(cfg, log, c)
+	claimLoop.Run(c.Handle)
 }
 
-func runCrawler(cfg *config.Config, log *zap.Logger, c *crawler.Crawler) {
+const requiredMigration = "0003"
 
-	if cfg.Debug {
-		// Chạy thẳng, không cần cron
-		log.Info("DEBUG mode: running crawler immediately")
-		c.Run()
-		log.Info("Done.")
-		return
+func checkSchemaVersion(ctx context.Context, pool *pgxpool.Pool, log *zap.Logger) {
+	var version string
+	err := pool.QueryRow(ctx,
+		`SELECT version_num FROM alembic_version WHERE version_num = $1`,
+		requiredMigration,
+	).Scan(&version)
+	if err != nil {
+		// Collect whatever revisions are actually applied for a useful error message.
+		var applied []string
+		if rows, qErr := pool.Query(ctx, `SELECT version_num FROM alembic_version`); qErr == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var v string
+				if rows.Scan(&v) == nil {
+					applied = append(applied, v)
+				}
+			}
+		}
+		current := strings.Join(applied, ", ")
+		if current == "" {
+			current = "(none — migrations may not have run)"
+		}
+		log.Fatal("schema version check failed",
+			zap.String("required", requiredMigration),
+			zap.String("applied", current),
+			zap.String("fix", "run `alembic upgrade head` in kol-data-platform"),
+		)
+	}
+	log.Info("schema version ok", zap.String("revision", version))
+}
+
+func validateConfig(cfg *config.Config, log *zap.Logger) error {
+	missing := []string{}
+	if cfg.PostgresDSN == "" {
+		missing = append(missing, "POSTGRES_DSN")
+	}
+	if cfg.GoLoginLauncherURL == "" {
+		missing = append(missing, "GOLOGIN_LAUNCHER_URL")
+	}
+	if cfg.MinIOEndpoint == "" {
+		missing = append(missing, "MINIO_ENDPOINT")
+	}
+	if cfg.MinIOBucket == "" {
+		missing = append(missing, "MINIO_BUCKET")
 	}
 
-	// Production: dùng scheduler
-	s := scheduler.New(cfg, log, c)
-	s.Start()
-	defer s.Stop()
-
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
-	log.Info("Shutting down...")
+	if len(missing) > 0 {
+		for _, m := range missing {
+			log.Error("missing required env var", zap.String("var", m))
+		}
+		fmt.Fprintf(os.Stderr, "missing required env vars: %s\n", strings.Join(missing, ", "))
+		return fmt.Errorf("missing env vars: %s", strings.Join(missing, ", "))
+	}
+	return nil
 }
