@@ -8,6 +8,17 @@ import (
 	"go.uber.org/zap"
 )
 
+// waitIfNightHours blocks until 05:00 if current time is between 00:00 and 05:00.
+func waitIfNightHours(log *zap.Logger) {
+	now := time.Now()
+	if now.Hour() >= 0 && now.Hour() < 5 {
+		next5am := time.Date(now.Year(), now.Month(), now.Day(), 5, 0, 0, 0, now.Location())
+		wait := time.Until(next5am)
+		log.Sugar().Infof("Night hours (%02d:%02d) — sleeping until 05:00 (%s)", now.Hour(), now.Minute(), next5am.Format("2006-01-02 15:04:05"))
+		time.Sleep(wait)
+	}
+}
+
 type Scheduler struct {
 	cfg     *config.Config
 	log     *zap.Logger
@@ -25,9 +36,9 @@ func New(cfg *config.Config, log *zap.Logger, c *crawler.Crawler) *Scheduler {
 }
 
 func (s *Scheduler) Start() {
-	// Interval between crawl cycles (105-150 minutes)
-	intervalMin := 105  // 1h45m
-	intervalMax := 150  // 2h30m
+	// Interval between crawl cycles (45-70 minutes)
+	intervalMin := 45
+	intervalMax := 70
 	
 	s.log.Info("Scheduler started with interval mode", 
 		zap.Int("interval_min_minutes", intervalMin),
@@ -35,6 +46,7 @@ func (s *Scheduler) Start() {
 	)
 
 	// Run immediately on startup
+	waitIfNightHours(s.log)
 	s.log.Info("Running initial crawl on startup...")
 	s.crawler.Run()
 
@@ -57,6 +69,7 @@ func (s *Scheduler) runInterval(minMinutes, maxMinutes int) {
 		
 		select {
 		case <-timer.C:
+			waitIfNightHours(s.log)
 			s.log.Info("========================================")
 			s.log.Info("Interval triggered - starting new crawl cycle")
 			s.log.Info("========================================")
