@@ -62,6 +62,11 @@ func (c *Crawler) Run() {
 			defer wg.Done()
 			c.runProfile(profileID, keywords, idx)
 		}(profileID, chunks[i], i)
+
+		if i < numProfiles-1 {
+			staggerSec := utils.RandInt(15, 45)
+			time.Sleep(time.Duration(staggerSec) * time.Second)
+		}
 	}
 	wg.Wait()
 }
