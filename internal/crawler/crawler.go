@@ -19,9 +19,9 @@ import (
 )
 
 const (
-	tiktokURL = "https://www.tiktok.com"
-	searchAPI = "/api/search/item/full/"
-	oneMonth = 180 * 24 * 60 * 60
+	tiktokURL  = "https://www.tiktok.com"
+	searchAPI  = "/api/search/item/full/"
+	cutoffSpan = 7 * 24 * 60 * 60
 )
 
 type Crawler struct {
@@ -55,11 +55,6 @@ func (c *Crawler) Run() {
 	numProfiles := len(c.cfg.ProfileIDs)
 	chunks := splitKeywords(keywords, numProfiles)
 
-	c.log.Sugar().Infof("Crawl started | %d profiles | %d keywords total", numProfiles, len(keywords))
-	for i, chunk := range chunks {
-		c.log.Sugar().Infof("  [P%d|%s...] %d keywords", i+1, c.cfg.ProfileIDs[i][:8], len(chunk))
-	}
-
 	var wg sync.WaitGroup
 	for i, profileID := range c.cfg.ProfileIDs {
 		wg.Add(1)
@@ -69,8 +64,6 @@ func (c *Crawler) Run() {
 		}(profileID, chunks[i], i)
 	}
 	wg.Wait()
-
-	c.log.Sugar().Info("Crawl cycle finished")
 }
 
 func splitKeywords(keywords []string, n int) [][]string {
@@ -85,8 +78,6 @@ func (c *Crawler) runProfile(profileID string, keywords []string, idx int) {
 	tag := fmt.Sprintf("[P%d|%s...]", idx+1, profileID[:8])
 	log := c.log
 
-	log.Sugar().Infof("%s Starting | %d keywords", tag, len(keywords))
-
 	pw, err := playwright.Run()
 	if err != nil {
 		log.Sugar().Errorf("%s playwright error: %v", tag, err)
@@ -95,21 +86,7 @@ func (c *Crawler) runProfile(profileID string, keywords []string, idx int) {
 	defer pw.Stop()
 
 	gpmClient := gpm.NewClient(c.cfg.GPMAPI, log)
-	browser, context, err := c.connectGPMWithRetry(pw, gpmClient, profileID, log, 3)
-	if err != nil {
-		log.Sugar().Errorf("%s GPM connect failed: %v", tag, err)
-		return
-	}
-	defer func() {
-		if browser != nil {
-			browser.Close()
-		}
-		gpmClient.StopProfile(profileID)
-	}()
-
-	log.Sugar().Infof("%s Connected to GPM", tag)
-	c.crawlSearchWithMonitoring(browser, context, keywords, pw, gpmClient, profileID, log, tag)
-	log.Sugar().Infof("%s Done", tag)
+	c.crawlSearch(pw, gpmClient, profileID, keywords, log, tag)
 }
 
 func (c *Crawler) connectGPMWithRetry(pw *playwright.Playwright, gpmClient *gpm.Client, profileID string, log *zap.Logger, maxRetries int) (playwright.Browser, playwright.BrowserContext, error) {
@@ -122,7 +99,6 @@ func (c *Crawler) connectGPMWithRetry(pw *playwright.Playwright, gpmClient *gpm.
 		if err == nil {
 			return browser, context, nil
 		}
-		log.Sugar().Warnf("GPM connect attempt %d/%d failed: %v", attempt, maxRetries, err)
 		if browser != nil {
 			browser.Close()
 		}
@@ -132,33 +108,6 @@ func (c *Crawler) connectGPMWithRetry(pw *playwright.Playwright, gpmClient *gpm.
 		}
 	}
 	return nil, nil, fmt.Errorf("failed after %d attempts: %w", maxRetries, err)
-}
-
-func (c *Crawler) crawlSearchWithMonitoring(browser playwright.Browser, context playwright.BrowserContext, keywords []string, pw *playwright.Playwright, gpmClient *gpm.Client, profileID string, log *zap.Logger, tag string) {
-	defer func() {
-		if r := recover(); r != nil {
-			log.Sugar().Errorf("%s panic: %v", tag, r)
-		}
-	}()
-
-	if !c.isBrowserConnected(browser) {
-		log.Sugar().Warnf("%s Browser disconnected, reconnecting...", tag)
-		newBrowser, newContext, err := c.connectGPMWithRetry(pw, gpmClient, profileID, log, 3)
-		if err != nil {
-			log.Sugar().Errorf("%s Reconnect failed: %v", tag, err)
-			return
-		}
-		browser = newBrowser
-		context = newContext
-		log.Sugar().Infof("%s Reconnected", tag)
-	}
-
-	c.crawlSearch(context, keywords, log, tag)
-}
-
-func (c *Crawler) isBrowserConnected(browser playwright.Browser) bool {
-	defer func() { recover() }()
-	return len(browser.Contexts()) > 0
 }
 
 func (c *Crawler) connectGPM(pw *playwright.Playwright, gpmClient *gpm.Client, profileID string, log *zap.Logger) (playwright.Browser, playwright.BrowserContext, error) {
@@ -180,7 +129,7 @@ func (c *Crawler) connectGPM(pw *playwright.Playwright, gpmClient *gpm.Client, p
 	return browser, contexts[0], nil
 }
 
-func (c *Crawler) crawlSearch(context playwright.BrowserContext, keywords []string, log *zap.Logger, tag string) {
+func (c *Crawler) crawlSearch(pw *playwright.Playwright, gpmClient *gpm.Client, profileID string, keywords []string, log *zap.Logger, tag string) {
 	total := len(keywords)
 	i := 0
 
@@ -188,24 +137,26 @@ func (c *Crawler) crawlSearch(context playwright.BrowserContext, keywords []stri
 		batchSize := utils.RandInt(c.cfg.BatchMin, c.cfg.BatchMax)
 		batch := keywords[i:min(i+batchSize, total)]
 
-		log.Sugar().Infof("%s Session | %d keywords in batch", tag, len(batch))
-
 		for keywordIdx, keyword := range batch {
-			orgID := c.cfg.KeywordOrgMap[keyword]
-			log.Sugar().Infof("%s [%d/%d] org=%d %q", tag, i+keywordIdx+1, total, orgID, keyword)
-
-			page, err := c.createPageWithRetry(context, 3, log)
+			browser, context, err := c.connectGPMWithRetry(pw, gpmClient, profileID, log, 3)
 			if err != nil {
-				log.Sugar().Errorf("%s Page create failed for %q: %v", tag, keyword, err)
+				log.Sugar().Infof("%s %q -> 0 videos pushed to API", tag, keyword)
 				continue
 			}
 
-			c.crawlKeyword(page, keyword, log, tag)
-			page.Close()
+			page, err := c.createPageWithRetry(context, 3, log)
+			if err != nil {
+				log.Sugar().Infof("%s %q -> 0 videos pushed to API", tag, keyword)
+			} else {
+				c.crawlKeyword(page, keyword, log, tag)
+				page.Close()
+			}
+
+			browser.Close()
+			gpmClient.StopProfile(profileID)
 
 			if keywordIdx < len(batch)-1 {
 				sleepSec := utils.RandInt(c.cfg.SleepMinKeyword, c.cfg.SleepMaxKeyword)
-				log.Sugar().Infof("%s Sleep %ds before next keyword", tag, sleepSec)
 				time.Sleep(time.Duration(sleepSec) * time.Second)
 			}
 		}
@@ -213,12 +164,9 @@ func (c *Crawler) crawlSearch(context playwright.BrowserContext, keywords []stri
 		i += batchSize
 		if i < total {
 			restSec := utils.RandInt(c.cfg.RestMinSession, c.cfg.RestMaxSession)
-			log.Sugar().Infof("%s Rest %ds | %d/%d done", tag, restSec, i, total)
 			time.Sleep(time.Duration(restSec) * time.Second)
 		}
 	}
-
-	log.Sugar().Infof("%s All %d keywords done", tag, total)
 }
 
 func (c *Crawler) createPageWithRetry(context playwright.BrowserContext, maxRetries int, log *zap.Logger) (playwright.Page, error) {
@@ -233,7 +181,6 @@ func (c *Crawler) createPageWithRetry(context playwright.BrowserContext, maxRetr
 		if containsAny(err.Error(), []string{"target closed", "Target page", "browser has been closed"}) {
 			return nil, fmt.Errorf("browser closed: %w", err)
 		}
-		log.Sugar().Warnf("Page create attempt %d/%d: %v", attempt, maxRetries, err)
 		if attempt < maxRetries {
 			time.Sleep(2 * time.Second)
 		}
@@ -242,8 +189,6 @@ func (c *Crawler) createPageWithRetry(context playwright.BrowserContext, maxRetr
 }
 
 func (c *Crawler) crawlKeyword(page playwright.Page, keyword string, log *zap.Logger, tag string) {
-	startTime := time.Now()
-
 	page.Route("**/*", func(route playwright.Route) {
 		switch route.Request().ResourceType() {
 		case "stylesheet", "font", "image", "media", "other":
@@ -263,16 +208,13 @@ func (c *Crawler) crawlKeyword(page playwright.Page, keyword string, log *zap.Lo
 		go func(res playwright.Response) {
 			var body map[string]any
 			if err := res.JSON(&body); err != nil || body == nil {
-				log.Sugar().Warnf("%s   API response parse error: %v | url: %s", tag, err, res.URL())
 				return
 			}
 			statusCode, _ := body["status_code"].(float64)
 			items, _ := body["item_list"].([]any)
-			log.Sugar().Infof("%s   API hit: status=%v items=%d", tag, statusCode, len(items))
 
 			// Detect rate limit / captcha
 			if statusCode == 2061 || statusCode == 10000 || statusCode == -1 {
-				log.Sugar().Warnf("%s   ⚠️ Rate limited (status=%v), sleeping 5 minutes...", tag, statusCode)
 				time.Sleep(5 * time.Minute)
 				return
 			}
@@ -308,7 +250,7 @@ func (c *Crawler) crawlKeyword(page playwright.Page, keyword string, log *zap.Lo
 		WaitUntil: playwright.WaitUntilStateDomcontentloaded,
 		Timeout:   playwright.Float(30000),
 	}); err != nil {
-		log.Sugar().Warnf("%s TikTok home failed: %v", tag, err)
+		log.Sugar().Infof("%s %q -> 0 videos pushed to API", tag, keyword)
 		return
 	}
 	utils.Sleep(4000, 7000)
@@ -324,7 +266,7 @@ func (c *Crawler) crawlKeyword(page playwright.Page, keyword string, log *zap.Lo
 		WaitUntil: playwright.WaitUntilStateDomcontentloaded,
 		Timeout:   playwright.Float(30000),
 	}); err != nil {
-		log.Sugar().Warnf("%s Search navigate failed: %v", tag, err)
+		log.Sugar().Infof("%s %q -> 0 videos pushed to API", tag, keyword)
 		return
 	}
 	utils.Sleep(3000, 5000)
@@ -335,23 +277,21 @@ func (c *Crawler) crawlKeyword(page playwright.Page, keyword string, log *zap.Lo
 		return items.length > 0;
 	}`)
 	if hasVideos == nil || hasVideos == false {
-		log.Sugar().Infof("%s   Top tab empty, switching to Video tab...", tag)
 		videoURL := fmt.Sprintf("%s/search/video?q=%s&t=%d", tiktokURL, encoded, ts)
 		if _, err := page.Goto(videoURL, playwright.PageGotoOptions{
 			WaitUntil: playwright.WaitUntilStateDomcontentloaded,
 			Timeout:   playwright.Float(30000),
 		}); err != nil {
-			log.Sugar().Warnf("%s Video tab navigate failed: %v", tag, err)
+			log.Sugar().Infof("%s %q -> 0 videos pushed to API", tag, keyword)
 			return
 		}
 		utils.Sleep(4000, 6000)
 	}
-	
+
 	// Scroll to load more videos
 	scrollTimes := utils.RandInt(10, 15)
-	log.Sugar().Infof("%s   Scrolling %d times to load videos...", tag, scrollTimes)
 	_ = utils.HumanScroll(page, scrollTimes)
-	
+
 	// Random view video
 	_ = utils.RandomViewVideo(page)
 	utils.Sleep(1500, 2500)
@@ -362,21 +302,19 @@ func (c *Crawler) crawlKeyword(page playwright.Page, keyword string, log *zap.Lo
 
 	orgID := c.cfg.KeywordOrgMap[keyword]
 	results := c.parseVideos(keyword, orgID, items)
-	
-	// Tính thời gian crawl
-	duration := time.Since(startTime)
-	
+
 	if len(results) > 0 {
-		c.pushToAPI(keyword, results, log, tag)
-		log.Sugar().Infof("%s   %q -> %d videos → %s | ⏱️ %s", tag, keyword, len(results), c.cfg.APIURL, duration.Round(time.Second))
-	} else {
-		log.Sugar().Infof("%s   %q -> 0 videos | ⏱️ %s", tag, keyword, duration.Round(time.Second))
+		if err := c.pushToAPI(results); err != nil {
+			log.Sugar().Infof("%s %q -> push to API failed: %v", tag, keyword, err)
+			return
+		}
 	}
+	log.Sugar().Infof("%s %q -> %d videos pushed to API", tag, keyword, len(results))
 }
 
 func (c *Crawler) parseVideos(keyword string, orgID int, items []map[string]any) []models.VideoItem {
 	nowTs := time.Now().Unix()
-	cutoff := nowTs - oneMonth
+	cutoff := nowTs - cutoffSpan
 	var results []models.VideoItem
 
 	for _, item := range items {
@@ -406,17 +344,12 @@ func (c *Crawler) parseVideos(keyword string, orgID int, items []map[string]any)
 	return results
 }
 
-func (c *Crawler) pushToAPI(keyword string, videos []models.VideoItem, log *zap.Logger, tag string) {
+func (c *Crawler) pushToAPI(videos []models.VideoItem) error {
 	var posts []parser.TiktokPost
 	for _, v := range videos {
 		posts = append(posts, parser.FromVideoItem(v))
 	}
-
-	if err := c.apiClient.PostUnclassified(posts); err != nil {
-		log.Sugar().Errorf("%s   %q -> push to %s failed: %v", tag, keyword, c.cfg.APIURL, err)
-		return
-	}
-	// Log đã được gộp vào crawlKeyword
+	return c.apiClient.PostUnclassified(posts)
 }
 
 func containsAny(s string, subs []string) bool {
