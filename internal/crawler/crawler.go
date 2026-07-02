@@ -142,13 +142,17 @@ func (c *Crawler) crawlSearch(pw *playwright.Playwright, gpmClient *gpm.Client, 
 		batchSize := utils.RandInt(c.cfg.BatchMin, c.cfg.BatchMax)
 		batch := keywords[i:min(i+batchSize, total)]
 
-		for keywordIdx, keyword := range batch {
-			browser, context, err := c.connectGPMWithRetry(pw, gpmClient, profileID, log, 3)
-			if err != nil {
+		// Mở browser 1 lần cho cả batch
+		browser, context, err := c.connectGPMWithRetry(pw, gpmClient, profileID, log, 3)
+		if err != nil {
+			for _, keyword := range batch {
 				log.Sugar().Infof("%s %q -> 0 videos pushed to API", tag, keyword)
-				continue
 			}
+			i += batchSize
+			continue
+		}
 
+		for keywordIdx, keyword := range batch {
 			page, err := c.createPageWithRetry(context, 3, log)
 			if err != nil {
 				log.Sugar().Infof("%s %q -> 0 videos pushed to API", tag, keyword)
@@ -157,14 +161,15 @@ func (c *Crawler) crawlSearch(pw *playwright.Playwright, gpmClient *gpm.Client, 
 				page.Close()
 			}
 
-			browser.Close()
-			gpmClient.StopProfile(profileID)
-
 			if keywordIdx < len(batch)-1 {
 				sleepSec := utils.RandInt(c.cfg.SleepMinKeyword, c.cfg.SleepMaxKeyword)
 				time.Sleep(time.Duration(sleepSec) * time.Second)
 			}
 		}
+
+		// Đóng browser sau khi hết batch
+		browser.Close()
+		gpmClient.StopProfile(profileID)
 
 		i += batchSize
 		if i < total {
