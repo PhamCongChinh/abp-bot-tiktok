@@ -258,6 +258,7 @@ func (c *Crawler) crawlKeyword(page playwright.Page, keyword string, log *zap.Lo
 		log.Sugar().Infof("%s %q -> 0 videos pushed to API", tag, keyword)
 		return
 	}
+	_, _ = page.Evaluate("window.moveTo(0, 0); window.resizeTo(screen.availWidth, screen.availHeight);")
 	utils.Sleep(4000, 7000)
 	_ = utils.RandomMouseMove(page)
 	utils.Sleep(500, 1500)
